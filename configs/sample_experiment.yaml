@@ -1,0 +1,35 @@
+experiment:  # Experiment metadata
+  name: "AL10Cu_2015_ESRF"  # Name of the experiment
+  description: "Al-10wt%Cu alloy solidification tomography, ESRF ID19, June 2015"  # Description of the experiment
+  beamline: "ESRF-ID19"  # Beamline where the experiment was conducted
+  date: "2015-06-15"  # Date of the experiment
+
+data:  # Data acquisition parameters
+  source:  # Data source information
+    backend: "sftp"  # Data source backend ("sftp", "smb", "local")
+    host: "data.synology.echo"  # Hostname or IP address of the data source
+    port: 22  # Port number for the data source
+    # credentials_env: "NAS_USER"  # optional: environment variable for username
+    # No passwords in YAML files! Promopted at runtime or passed in notebook.
+    remote_dir: "/volume1/tomography/Al10Cu_2015"
+
+  files:
+    projections:
+      pattern: "tomo_*.edf"  # Pattern to match projection files
+      format: "edf"  # File format of the projection files
+    dark_fields:
+      pattern: "dark_*.edf"  # Pattern to match dark field files
+      format: "edf"  # File format of the dark field files
+    flat_fields:
+      pattern: "flat_*.edf"  # Pattern to match flat field files
+      format: "edf"  # File format of the flat field files
+
+    time_steps: [0, 5, 10, 15, 20]  # Time steps to process
+
+    output:
+      local_zarr: "/data/experiments/AL10Cu_2015_ESRF.zarr"  # Local path to save the processed data in Zarr format
+      # remote_zarr: "/volume1/processed/AL10Cu_2015_ESRF.zarr"  # optional: Remote path to save the processed data in Zarr format
+    
+    transfer:
+      max_workers: 8
+      chunk_size_mb: 64
