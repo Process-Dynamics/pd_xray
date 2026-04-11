@@ -71,7 +71,7 @@ class StorageBackend(ABC):
         prefix: str = "",
         pattern: str = "*",
         recursive: bool = False,
-    ) -> list[str]:
+    ) -> list[FileInfo]:
         """List files matching a glob pattern under prefix.
 
         Args:
