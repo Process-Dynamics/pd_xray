@@ -5,6 +5,8 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "fabio>=2025.10.0",
+    "numpy>=2.4.4",
     "pydantic>=2.12.5",
     "pytest>=9.0.3",
     "ruff>=0.15.10",
