@@ -2,7 +2,6 @@ from pathlib import Path
 from typing import Any
 
 from pd_xray.data.backends.base import StorageBackend, FileInfo
-from pd_xray.core.config import Config
 from pd_xray.core.logging import get_logger
 
 logger = get_logger(__name__)
