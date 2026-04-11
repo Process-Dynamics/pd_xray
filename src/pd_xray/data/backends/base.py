@@ -1,8 +1,69 @@
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from typing import Self
+
+
+@dataclass(frozen=True)
+class FileInfo:
+    """One entry returned by list_files().
+    
+    Attributes:
+        path         : Full path relative to the backend root.
+        size_bytes   : File size. -1 if the backend can't determine it.
+        is_directory : True for directories/prefixes.
+    """
+    path: str
+    size_bytes: int
+    is_directory: bool
 
 
 class StorageBackend(ABC):
-    """Abstract base class for storage systems."""
+    """Abstract base class for storage systems.
+    
+    Lifecycle:
+        1. Create     : backend = SFTPBackend(host="...", port=22)
+        2. Connect    : backend.connect(username="user", password="pass")
+        3. Use        : files = backend.list_files("/data/raw/", "*.edf")
+        4. Disconnect : backend.disconnect()
+    
+    Or use as context manager (preferred):
+        with SFTPBackend(host="...", port=22) as backend:
+            backend.connect(username="user", password="pass")
+            files = backend.list_files(...)
+    
+    The constructor takes connection parameters. The connect() method takes credentials. This split exists because
+    parameters come from YAML config but credentials come from runtime prompts or environment variables.
+    """
+
+    @abstractmethod
+    def connect(
+        self,
+        **credentials
+    ) -> None:
+        """Open the connection. Credentials vary by backend.
+
+        LocalBackend.connect() takes nothing (or validates root exists.)
+        SFTPBackend.connect(username=, password=) opens SSH transport.
+        SMBBackend.connect(username=, password=) opens SMB session.
+        """
+        ...
+    
+    @abstractmethod
+    def disconnect(self) -> None:
+        """Release all resources."""
+        ...
+
+    @property
+    @abstractmethod
+    def isconnected(self) -> bool:
+        """Whether this backend is currently connected and usable."""
+        ...
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.disconnect()
 
     @abstractmethod
     def list_files(
