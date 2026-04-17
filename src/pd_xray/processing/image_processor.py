@@ -1,3 +1,4 @@
+import time
 import numpy as np
 from numpy.typing import NDArray
 from scipy.ndimage import (
@@ -6,6 +7,7 @@ from scipy.ndimage import (
     binary_erosion,
     binary_dilation,
     rotate,
+    zoom,
 )
 from skimage import exposure, morphology
 from skimage.restoration import denoise_bilateral
@@ -85,7 +87,58 @@ class Image2DProcessor:
         Returns:
             Tuple of (processed array, ProcessingResult).
         """
-        ...
+        if image.ndim != 2:
+            return image, ProcessingResult(
+                status="failed",
+                errors=[f"Expected a 2D array, got shape {image.shape}"],
+            )
+
+        dispatch: dict[str, object] = {
+            "gaussian_blur":    self._gaussian_blur,
+            "median_filter":    self._median_filter,
+            "bilateral_filter": self._bilateral_filter,
+            "rolling_ball":     self._rolling_ball,
+            "erode":            self._erode,
+            "dilate":           self._dilate,
+            "normalise":        self._normalise,
+            "clip":             self._clip,
+            "clahe":            self._clahe,
+            "rotate":           self._rotate,
+            "crop":             self._crop,
+            "resize":           self._resize,
+            "circular_mask":    self._circular_mask,
+        }
+
+        current = image.astype(np.float32, copy=False)
+        warnings: list[str] = []
+        t0 = time.perf_counter()
+
+        for step in self._steps:
+            step = step.copy()
+            name = step.pop("name", None)
+
+            if name is None:
+                warnings.append("Step missing 'name' key, skipping.")
+                continue
+            if name not in dispatch:
+                warnings.append(f"Unknown step '{name}', skipping.")
+                continue
+
+            try:
+                current = dispatch[name](current, **step)  # type: ignore[operator]
+            except Exception as exc:
+                return current, ProcessingResult(
+                    status="failed",
+                    duration_seconds=time.perf_counter() - t0,
+                    errors=[f"Step '{name}' failed: {exc}"],
+                    warnings=warnings,
+                )
+
+        return current, ProcessingResult(
+            status="success",
+            duration_seconds=time.perf_counter() - t0,
+            warnings=warnings,
+        )
 
     # ------------------------------------------------------------------
     # Spatial filters
@@ -198,7 +251,7 @@ class Image2DProcessor:
         """
         return binary_erosion(
             image,
-            structure=np.ones((kernel_size, kernel_size)),
+            structure=np.ones((kernel_size, kernel_size), dtype=bool),
             iterations=iterations,
         ).astype(np.float32)
 
@@ -220,9 +273,9 @@ class Image2DProcessor:
         """
         return binary_dilation(
             image,
-            structure=np.ones((kernel_size, kernel_size)),
-            iterations=iterations
-        )
+            structure=np.ones((kernel_size, kernel_size), dtype=bool),
+            iterations=iterations,
+        ).astype(np.float32)
 
     # ------------------------------------------------------------------
     # Intensity adjustments
@@ -244,10 +297,14 @@ class Image2DProcessor:
         Returns:
             Normalised float32 array.
         """
-        min = low if low is not None else image.min()
-        max = high if high is not None else image.max()
+        src_min = low if low is not None else float(image.min())
+        src_max = high if high is not None else float(image.max())
 
-        return (image - min) / (max - min)
+        span = src_max - src_min
+        if span == 0.0:
+            return np.zeros_like(image)
+
+        return ((image - src_min) / span).astype(np.float32)
 
     def _clip(
         self,
@@ -336,7 +393,8 @@ class Image2DProcessor:
         return rotate(
             image,
             angle=angle_deg,
-        )
+            reshape=False,
+        ).astype(np.float32)
 
     def _crop(
         self,
@@ -376,7 +434,9 @@ class Image2DProcessor:
         Returns:
             Resized float32 array.
         """
-        return image.reshape((height, width))
+        zoom_y = height / image.shape[0]
+        zoom_x = width / image.shape[1]
+        return zoom(image, (zoom_y, zoom_x), order=1).astype(np.float32)
 
     def _circular_mask(
         self,
