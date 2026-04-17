@@ -7,6 +7,7 @@ requires-python = ">=3.12"
 dependencies = [
     "dask>=2026.3.0",
     "fabio>=2025.10.0",
+    "matplotlib>=3.10.8",
     "numpy<2.0",  # Requirement for CIL
     "pydantic>=2.12.5",
     "pytest>=9.0.3",
