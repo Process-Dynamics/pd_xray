@@ -5,17 +5,22 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "dask>=2026.3.0",
     "fabio>=2025.10.0",
-    "numpy>=2.4.4",
+    "numpy<2.0",  # Requirement for CIL
     "pydantic>=2.12.5",
     "pytest>=9.0.3",
     "ruff>=0.15.10",
-    "zarr>=3.1.6",
+    "scikit-image>=0.26.0",
+    "scipy>=1.17.1",
+    "tqdm>=4.67.3",
+    "zarr==3.1.5",  # Specific version because numpy req is updated at 3.1.6
 ]
 
 [dependency-groups]
 dev = [
     "mypy>=1.20.0",
+    "scipy-stubs>=1.17.1.4",
     "types-pyyaml>=6.0.12.20260408",
 ]
 
