@@ -1,3 +1,5 @@
+import dask
+import dask.array as da
 import fabio  # type: ignore[import]
 import numpy as np
 from numpy.typing import NDArray
@@ -68,7 +70,21 @@ class EDFReader(FormatReader):
             return np.stack(frame_list, axis=0)
         except Exception as e:
             raise IOError(f"Error reading EDF file {path}: {e}")
-        
+    
+    def read_with_index(
+        self,
+        paths: list[str],
+        start_frame: int,
+        end_frame: int,
+    ) -> da.Array:
+        """Read a list of EDF files and stack them into a lazy 3D Dask array."""
+        frame_shape = self.read_header(path=paths[0])["shape"]
+        height = frame_shape[0]
+        width = frame_shape[1]
+        delayed_read = dask.delayed(self.read)(paths[0], start_frame, end_frame),
+        return da.from_delayed(delayed_read, shape=(height, width), dtype=np.float32)
+
+
     def read_header(self, path: str | Path) -> dict[str, Any]:
         """Read metadata from EDF header without loading pixel data."""
         path = Path(path)

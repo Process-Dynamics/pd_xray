@@ -18,6 +18,10 @@ class LocalBackend(StorageBackend):
     def __init__(self, root: str | Path):
         self._root = Path(root)
         self._connected = False
+    
+    @property
+    def root(self) -> Path:
+        return self._root
 
     def connect(self, **credentials: Any) -> None:
         # No credentials needed for local, just check the root exists and is a directory.
