@@ -442,17 +442,20 @@ class Image2DProcessor:
         self,
         image: NDArray[np.float32],
         mask_ratio: float = 0.5,
+        crop_to_circle: bool = False,
     ) -> NDArray[np.float32]:
         """Mask pixels outside a centered circular field of view to NaN.
-        
+
         Used to remove artefacts at the sinogram edges that fall outside the detector FOV.
-        
+
         Args:
-            image      : Input 2D array.
-            mask_ratio : Fraction of min(height, width) to use as circle radius. Values in (0, 1)
-        
+            image          : Input 2D array.
+            mask_ratio     : Fraction of min(height, width) to use as circle radius. Values in (0, 1).
+            crop_to_circle : If True, crop the output to the bounding square of the circle,
+                             removing the outer NaN border entirely.
+
         Returns:
-            Masked float32 array.
+            Masked float32 array, cropped to (2*radius, 2*radius) if crop_to_circle is True.
         """
         height, width = image.shape
         center_y, center_x = height // 2, width // 2
@@ -464,5 +467,13 @@ class Image2DProcessor:
 
         result = image.copy()
         result[~inside_fov] = np.nan
+
+        if crop_to_circle:
+            r = int(radius)
+            row_start = max(center_y - r, 0)
+            row_end   = min(center_y + r, height)
+            col_start = max(center_x - r, 0)
+            col_end   = min(center_x + r, width)
+            result = result[row_start:row_end, col_start:col_end]
 
         return result
