@@ -3,7 +3,9 @@ import sys
 
 
 def setup_logging(
-    level: int = logging.INFO, format_string: str | None = None, date_format: str | None = None
+    level: str | int = logging.INFO,
+    format_string: str | None = None,
+    date_format: str | None = None,
 ) -> None:
     """
     Configure global logging settings for the entire application.
@@ -13,6 +15,8 @@ def setup_logging(
         format_string: Custom format string
         date_format: Custom date format
     """
+    if isinstance(level, str):
+        level = getattr(logging, level.upper(), logging.INFO)
     if format_string is None:
         format_string = "%(asctime)s | %(name)s | %(levelname)-8s | %(message)s"
 

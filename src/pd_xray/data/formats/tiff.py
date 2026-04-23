@@ -105,3 +105,21 @@ class TIFFReader(FormatReader):
         if not path.exists() or not path.is_file():
             return False
         return path.suffix.lower() in self._EXTENSIONS
+    
+    def write(
+        self,
+        path: str | Path,
+        data: NDArray[np.float32],
+        path_exists_ok: bool = False,
+        create_dirs: bool = True,
+    ) -> None:
+        """Write a 2D or 3D array to a TIFF file."""
+        path = Path(path)
+        if create_dirs:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        if not path_exists_ok and path.exists():
+            raise FileExistsError(f"File already exists: {path}")
+        try:
+            tifffile.imwrite(str(path), data.astype(np.float32))
+        except Exception as e:
+            raise IOError(f"Error writing TIFF file {path}: {e}")
