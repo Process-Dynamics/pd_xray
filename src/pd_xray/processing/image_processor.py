@@ -6,6 +6,9 @@ from scipy.ndimage import (
     median_filter,
     binary_erosion,
     binary_dilation,
+    binary_opening,
+    binary_closing,
+    binary_fill_holes,
     rotate,
     zoom,
 )
@@ -94,19 +97,24 @@ class Image2DProcessor:
             )
 
         dispatch: dict[str, object] = {
-            "gaussian_blur":    self._gaussian_blur,
-            "median_filter":    self._median_filter,
-            "bilateral_filter": self._bilateral_filter,
-            "rolling_ball":     self._rolling_ball,
-            "erode":            self._erode,
-            "dilate":           self._dilate,
-            "normalise":        self._normalise,
-            "clip":             self._clip,
-            "clahe":            self._clahe,
-            "rotate":           self._rotate,
-            "crop":             self._crop,
-            "resize":           self._resize,
-            "circular_mask":    self._circular_mask,
+            "gaussian_blur":        self._gaussian_blur,
+            "median_filter":        self._median_filter,
+            "bilateral_filter":     self._bilateral_filter,
+            "rolling_ball":         self._rolling_ball,
+            "erode":                self._erode,
+            "dilate":               self._dilate,
+            "open":                 self._open,
+            "close":                self._close,
+            "fill_holes":           self._fill_holes,
+            "remove_small_objects": self._remove_small_objects,
+            "remove_small_holes":   self._remove_small_holes,
+            "normalise":            self._normalise,
+            "clip":                 self._clip,
+            "clahe":                self._clahe,
+            "rotate":               self._rotate,
+            "crop":                 self._crop,
+            "resize":               self._resize,
+            "circular_mask":        self._circular_mask,
         }
 
         current = image.astype(np.float32, copy=False)
@@ -277,6 +285,117 @@ class Image2DProcessor:
             iterations=iterations,
         ).astype(np.float32)
 
+    def _open(
+        self,
+        image: NDArray[np.float32],
+        kernel_size: int,
+        iterations: int = 1,
+    ) -> NDArray[np.float32]:
+        """Morphological opening (erode then dilate).
+
+        Removes small bright blobs and thin protrusions without shrinking
+        larger structures. Preferred over separate erode+dilate calls.
+
+        Args:
+            image       : Input 2D array.
+            kernel_size : Side length of the structuring element.
+            iterations  : Number of times to apply the full open.
+
+        Returns:
+            Opened float32 array.
+        """
+        return binary_opening(
+            image,
+            structure=np.ones((kernel_size, kernel_size), dtype=bool),
+            iterations=iterations,
+        ).astype(np.float32)
+
+    def _close(
+        self,
+        image: NDArray[np.float32],
+        kernel_size: int,
+        iterations: int = 1,
+    ) -> NDArray[np.float32]:
+        """Morphological closing (dilate then erode).
+
+        Fills small dark holes and bridges narrow gaps without growing
+        larger structures. Preferred over separate dilate+erode calls.
+
+        Args:
+            image       : Input 2D array.
+            kernel_size : Side length of the structuring element.
+            iterations  : Number of times to apply the full close.
+
+        Returns:
+            Closed float32 array.
+        """
+        return binary_closing(
+            image,
+            structure=np.ones((kernel_size, kernel_size), dtype=bool),
+            iterations=iterations,
+        ).astype(np.float32)
+
+    def _fill_holes(
+        self,
+        image: NDArray[np.float32],
+    ) -> NDArray[np.float32]:
+        """Fill enclosed holes (background regions completely surrounded by foreground).
+
+        Useful for fixing prediction gaps inside a solid phase — e.g. a dendrite
+        arm with spurious background pixels in its interior.
+
+        Args:
+            image : Input 2D binary array (non-zero = foreground).
+
+        Returns:
+            Hole-filled float32 array.
+        """
+        return binary_fill_holes(image).astype(np.float32)
+
+    def _remove_small_objects(
+        self,
+        image: NDArray[np.float32],
+        min_size: int = 64,
+    ) -> NDArray[np.float32]:
+        """Remove connected foreground regions smaller than min_size pixels.
+
+        Useful for eliminating isolated noise predictions that survived
+        thresholding — e.g. single-pixel or small-cluster false positives.
+
+        Args:
+            image    : Input 2D binary array (non-zero = foreground).
+            min_size : Minimum number of pixels a connected region must have
+                       to be kept.
+
+        Returns:
+            Cleaned float32 array with small objects removed.
+        """
+        return morphology.remove_small_objects(
+            image.astype(bool), min_size=min_size
+        ).astype(np.float32)
+
+    def _remove_small_holes(
+        self,
+        image: NDArray[np.float32],
+        area_threshold: int = 64,
+    ) -> NDArray[np.float32]:
+        """Fill enclosed background holes smaller than area_threshold pixels.
+
+        Like fill_holes but limited to small holes — large interior gaps are
+        left untouched. Useful when you want to patch minor prediction artifacts
+        without affecting genuine voids (e.g. actual pores in the sample).
+
+        Args:
+            image           : Input 2D binary array (non-zero = foreground).
+            area_threshold  : Maximum hole area in pixels to fill.
+
+        Returns:
+            Float32 array with small holes filled.
+        """
+        return morphology.remove_small_holes(
+            image.astype(bool), area_threshold=area_threshold
+        ).astype(np.float32)
+
     # ------------------------------------------------------------------
     # Intensity adjustments
     # ------------------------------------------------------------------
@@ -297,8 +416,8 @@ class Image2DProcessor:
         Returns:
             Normalised float32 array.
         """
-        src_min = low if low is not None else float(image.min())
-        src_max = high if high is not None else float(image.max())
+        src_min = low if low is not None else float(np.nanmin(image))
+        src_max = high if high is not None else float(np.nanmax(image))
 
         span = src_max - src_min
         if span == 0.0:
@@ -460,7 +579,6 @@ class Image2DProcessor:
         height, width = image.shape
         center_y, center_x = height // 2, width // 2
         radius = min(height, width) / 2.0 * mask_ratio
-
         y_coords, x_coords = np.ogrid[:height, :width]
         inside_fov = (x_coords - center_x) ** 2 + \
             (y_coords - center_y) ** 2 <= radius**2
@@ -477,3 +595,65 @@ class Image2DProcessor:
             result = result[row_start:row_end, col_start:col_end]
 
         return result
+
+
+# ------------------------------------------------------------------
+# Segmentation post-processing utility
+# ------------------------------------------------------------------
+
+def postprocess_segmentation_mask(
+    mask: NDArray[np.int32],
+    steps: list[dict],
+    class_ids: list[int] | None = None,
+    background_class: int = 0,
+) -> NDArray[np.int32]:
+    """Apply morphological post-processing per class to a segmentation mask.
+
+    Each class is extracted as a binary mask, processed independently through
+    the given steps, then recomposed into a single label map. Only binary
+    operations make sense here: erode, dilate, open, close, fill_holes,
+    remove_small_objects, remove_small_holes.
+
+    Conflict resolution: classes are written in the order of class_ids with
+    background_class written first, so foreground classes overwrite it.
+    If two foreground classes overlap after processing, the one appearing
+    later in class_ids takes priority.
+
+    Example::
+        cleaned = postprocess_segmentation_mask(
+            pred_mask,
+            steps=[
+                {"name": "fill_holes"},
+                {"name": "remove_small_objects", "min_size": 200},
+                {"name": "close", "kernel_size": 3},
+            ],
+            background_class=0,
+        )
+
+    Args:
+        mask:             2D int32 label map of shape (H, W).
+        steps:            Image2DProcessor step dicts for binary operations.
+        class_ids:        Classes to process. Defaults to all unique classes
+                          found in the mask.
+        background_class: Class written first (lowest priority). Default 0.
+
+    Returns:
+        Post-processed int32 label map of the same shape as mask.
+    """
+    if class_ids is None:
+        class_ids = [int(c) for c in np.unique(mask)]
+
+    # Background is written first so any foreground class can overwrite it.
+    ordered = [background_class] + [c for c in class_ids if c != background_class]
+
+    processor = Image2DProcessor(steps=steps)
+    output = np.full_like(mask, fill_value=background_class)
+
+    for class_id in ordered:
+        if class_id not in class_ids:
+            continue
+        binary = (mask == class_id).astype(np.float32)
+        processed = processor(binary)
+        output[processed > 0.5] = class_id
+
+    return output
