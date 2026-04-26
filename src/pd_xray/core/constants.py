@@ -16,3 +16,9 @@ SUPPORTED_RAW_FORMATS: frozenset[str] = frozenset(
 DEFAULT_MAX_WORKERS: int = 4
 DEFAULT_CHUNK_SIZE_MB: int = 64        # Target chunk size in MB
 MIN_FREE_MEMORY_FRACTION: float = 0.2  # Keep 20% RAM free
+
+LABEL_BACKGROUND = 0
+LABEL_EUTECTIC = 1
+LABEL_DENDRITE = 2
+LABEL_HOLE = 3
+VOXEL_SIZE = 1.1
