@@ -22,6 +22,76 @@ from pd_xray.core import ProcessingResult, T, get_logger
 _logger = get_logger(__name__)
 
 
+def flat_dark_field_correction(
+    image: NDArray,
+    flat: NDArray,
+    dark: NDArray,
+) -> NDArray:
+    """Apply flat-field and dark-field correction to a projection image or stack.
+
+    Standard correction formula::
+
+        corrected = (image - dark) / (flat - dark)
+
+    Pixels where ``flat - dark == 0`` (dead pixels) are set to NaN in the output.
+
+    If ``flat`` or ``dark`` are 3D they are averaged along axis 0 before the
+    correction is applied, which is the standard way to combine multiple
+    flat/dark acquisitions into a single reference frame.
+
+    For a 3D ``image`` of shape ``(N, H, W)`` the same 2D reference frames are
+    broadcast across all N frames along axis 0.
+
+    Args:
+        image : 2D ``(H, W)`` or 3D ``(N, H, W)`` projection array.
+        flat  : 2D ``(H, W)`` or 3D ``(K, H, W)`` flat-field (beam, no sample).
+        dark  : 2D ``(H, W)`` or 3D ``(K, H, W)`` dark-field (no beam).
+
+    Returns:
+        Corrected float32 array of the same shape as ``image``.
+
+    Raises:
+        ValueError: If any input is not 2D or 3D, or if the spatial dimensions
+                    ``(H, W)`` do not match across ``image``, ``flat``, and ``dark``.
+    """
+    for name, arr in (("image", image), ("flat", flat), ("dark", dark)):
+        if arr.ndim not in (2, 3):
+            raise ValueError(f"{name} must be 2D or 3D, got {arr.ndim}D.")
+
+    flat_2d: NDArray[np.float32] = (
+        flat.mean(axis=0) if flat.ndim == 3 else flat
+    ).astype(np.float32, copy=False)
+
+    dark_2d: NDArray[np.float32] = (
+        dark.mean(axis=0) if dark.ndim == 3 else dark
+    ).astype(np.float32, copy=False)
+
+    h, w = image.shape[-2], image.shape[-1]
+    if flat_2d.shape != (h, w):
+        raise ValueError(
+            f"flat spatial dimensions {flat_2d.shape} do not match image ({h}, {w})."
+        )
+    if dark_2d.shape != (h, w):
+        raise ValueError(
+            f"dark spatial dimensions {dark_2d.shape} do not match image ({h}, {w})."
+        )
+
+    img = image.astype(np.float32, copy=False)
+    denominator = flat_2d - dark_2d  # (H, W)
+
+    # Replace zero-denominator pixels with 1 to avoid divide-by-zero, then mask
+    safe_denom = np.where(denominator == 0, 1.0, denominator)
+    corrected: NDArray[np.float32] = (img - dark_2d) / safe_denom
+
+    zero_mask = denominator == 0  # (H, W)
+    if corrected.ndim == 3:
+        corrected[:, zero_mask] = np.nan
+    else:
+        corrected[zero_mask] = np.nan
+
+    return corrected
+
+
 class ImageProcessor:
     """Applies a configurable sequence of filters and transforms to a 2D or 3D image array.
 
@@ -79,8 +149,9 @@ class ImageProcessor:
         "crop"                    : "_crop",
         "resize"                  : "_resize",
         "circular_mask"           : "_circular_mask",
-        "cylindrical_mask"        : "_extract_cylinder",
-        "extract_segmented_class" : "_extract_class_from_segmentation",
+        "cylindrical_mask"            : "_extract_cylinder",
+        "extract_segmented_class"     : "_extract_class_from_segmentation",
+        "flat_dark_field_correction"  : "_flat_dark_field_correction",
     }
 
     def __init__(self, steps: list[dict] | None = None) -> None:
@@ -349,6 +420,19 @@ class ImageProcessor:
     ) -> "ImageProcessor":
         """Extract one class from an integer-labelled segmentation as a boolean mask."""
         return self._add_step("extract_segmented_class", dtype, class_value=class_value)
+
+    def flat_dark_field_correction(
+        self,
+        flat: NDArray,
+        dark: NDArray,
+        dtype: DTypeLike | None = None,
+    ) -> "ImageProcessor":
+        """Flat-field and dark-field correction: (image - dark) / (flat - dark).
+
+        ``flat`` and ``dark`` are stored in the pipeline and applied to every image
+        passed through it. If either is 3D it is averaged along axis 0 before use.
+        """
+        return self._add_step("flat_dark_field_correction", dtype, flat=flat, dark=dark)
 
     # ------------------------------------------------------------------
     # Spatial filters
@@ -742,6 +826,12 @@ class ImageProcessor:
             result = result[..., rs:re, cs:ce]
 
         return result
+
+    def _flat_dark_field_correction(
+        self, image: NDArray, flat: NDArray, dark: NDArray
+    ) -> NDArray:
+        """Delegate to the module-level flat_dark_field_correction function."""
+        return flat_dark_field_correction(image, flat=flat, dark=dark)
 
     def _extract_cylinder(self, array: NDArray[T], mask_ratio: float = 0.5) -> NDArray[T]:
         """Apply a cylindrical mask and crop to the bounding box.

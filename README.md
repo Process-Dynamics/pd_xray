@@ -106,6 +106,38 @@ dask_volume = da.from_zarr("scan.zarr")
 processed   = dask_volume.map_blocks(proc, dtype=np.float32)
 ```
 
+### Flat-field and dark-field correction
+
+`flat_dark_field_correction` applies the standard radiography correction formula
+`(image - dark) / (flat - dark)` to a 2D frame or a 3D stack:
+
+```python
+from pd_xray.processing import flat_dark_field_correction
+
+# Standalone function
+corrected = flat_dark_field_correction(projections, flat=flat_stack, dark=dark_stack)
+```
+
+```
+image : (H, W) or (N, H, W) — single frame or N-frame stack
+flat  : (H, W) or (K, H, W) — if 3D, averaged along axis 0 before use
+dark  : (H, W) or (K, H, W) — if 3D, averaged along axis 0 before use
+```
+
+Pixels where `flat - dark == 0` (dead pixels) are set to NaN. A `ValueError` is
+raised if the spatial dimensions `(H, W)` do not match across all three inputs.
+
+It is also available as a pipeline step:
+
+```python
+proc = (
+    ImageProcessor()
+    .flat_dark_field_correction(flat=flat_mean, dark=dark_mean)
+    .gaussian_blur(sigma=1.0)
+    .normalise()
+)
+```
+
 ### Segmentation post-processing
 
 `postprocess_segmentation_mask` applies morphological cleanup per-class to an integer label map:
