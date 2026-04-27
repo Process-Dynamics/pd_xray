@@ -1,5 +1,6 @@
-from pd_xray.processing.image_processor import Image2DProcessor
+from pd_xray.processing.image_processor import ImageProcessor, postprocess_segmentation_mask
 
 __all__ = [
-    "Image2DProcessor",
+    "ImageProcessor",
+    "postprocess_segmentation_mask",
 ]
