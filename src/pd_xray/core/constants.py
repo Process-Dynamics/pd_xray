@@ -1,5 +1,8 @@
 """Package-wide constants"""
 
+from typing import TypeVar
+
+import numpy as np
 
 ZARR_DEFAULT_COMPRESSION: str = "zstd"
 ZARR_DEFAULT_COMPRESSION_LEVEL: int = 3
@@ -22,3 +25,5 @@ LABEL_EUTECTIC = 1
 LABEL_DENDRITE = 2
 LABEL_HOLE = 3
 VOXEL_SIZE = 1.1
+
+T = TypeVar("T", bound=np.generic)

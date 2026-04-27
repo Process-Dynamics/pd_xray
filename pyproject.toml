@@ -20,7 +20,10 @@ dependencies = [
     "pandas>=2.3.3",
     "plotly>=6.7.0",
     "nbformat>=5.10.4",
-    "napari[all]>=0.7.0",
+    "ipykernel>=7.2.0",
+    "pyvista>=0.47.3",
+    "cucim>=23.10.0",
+    "connected-components-3d>=3.26.1",
 ]
 
 [dependency-groups]

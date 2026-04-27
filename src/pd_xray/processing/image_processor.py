@@ -15,9 +15,7 @@ from scipy.ndimage import (
 from skimage import exposure, morphology
 from skimage.restoration import denoise_bilateral
 
-from pd_xray.core.logging import get_logger
-from pd_xray.core.types import ProcessingResult
-
+from pd_xray.core import ProcessingResult, get_logger, T
 
 _logger = get_logger(__name__)
 
@@ -90,31 +88,27 @@ class Image2DProcessor:
         Returns:
             Tuple of (processed array, ProcessingResult).
         """
-        if image.ndim != 2:
-            return image, ProcessingResult(
-                status="failed",
-                errors=[f"Expected a 2D array, got shape {image.shape}"],
-            )
 
         dispatch: dict[str, object] = {
-            "gaussian_blur":        self._gaussian_blur,
-            "median_filter":        self._median_filter,
-            "bilateral_filter":     self._bilateral_filter,
-            "rolling_ball":         self._rolling_ball,
-            "erode":                self._erode,
-            "dilate":               self._dilate,
-            "open":                 self._open,
-            "close":                self._close,
-            "fill_holes":           self._fill_holes,
-            "remove_small_objects": self._remove_small_objects,
-            "remove_small_holes":   self._remove_small_holes,
-            "normalise":            self._normalise,
-            "clip":                 self._clip,
-            "clahe":                self._clahe,
-            "rotate":               self._rotate,
-            "crop":                 self._crop,
-            "resize":               self._resize,
-            "circular_mask":        self._circular_mask,
+            "gaussian_blur"           : self._gaussian_blur,
+            "median_filter"           : self._median_filter,
+            "bilateral_filter"        : self._bilateral_filter,
+            "rolling_ball"            : self._rolling_ball,
+            "erode"                   : self._erode,
+            "dilate"                  : self._dilate,
+            "open"                    : self._open,
+            "close"                   : self._close,
+            "fill_holes"              : self._fill_holes,
+            "remove_small_objects"    : self._remove_small_objects,
+            "remove_small_holes"      : self._remove_small_holes,
+            "normalise"               : self._normalise,
+            "clahe"                   : self._clahe,
+            "rotate"                  : self._rotate,
+            "crop"                    : self._crop,
+            "resize"                  : self._resize,
+            "circular_mask"           : self._circular_mask,
+            "cylindrical_mask"        : self._extract_cylinder,
+            "extract_segmented_class" : self._extract_class_from_segmentation,
         }
 
         current = image.astype(np.float32, copy=False)
@@ -595,6 +589,76 @@ class Image2DProcessor:
             result = result[row_start:row_end, col_start:col_end]
 
         return result
+    
+    def _extract_cylinder(
+        self,
+        array: NDArray[T],
+        mask_ratio: float = 0.5,
+    ) -> NDArray[T]:
+        """Apply cylinder mask. If the array is 2D, it is just a circular mask.
+
+        Arguments:
+            array      : numpy array. Either 2D or 3D
+            mask_ratio : fraction of min(height, width) to use as circle radius.
+
+        Returns:
+            Cropped numpy array.
+        """
+        if array.ndim not in (2, 3):
+            raise ValueError("Array must be 2D or 3D")
+
+        # Spatial dimensions (assume last two are Y, X)
+        h, w = array.shape[-2:]
+        cy, cx = h // 2, w // 2
+
+        radius = mask_ratio * (min(h, w) / 2)
+
+        # Create coordinate grid
+        y, x = np.ogrid[:h, :w]
+        dist2 = (y - cy) ** 2 + (x - cx) ** 2
+        mask_2d = dist2 <= radius**2
+
+        # Apply mask
+        if array.ndim == 2:
+            masked = np.where(mask_2d, array, 0)
+        else:
+            # Broadcast mask across leading dimension
+            masked = np.where(mask_2d[None, ...], array, 0)
+
+        ys, xs = np.where(mask_2d)
+        y_min, y_max = ys.min(), ys.max() + 1
+        x_min, x_max = xs.min(), xs.max() + 1
+
+        if array.ndim == 2:
+            return masked[y_min:y_max, x_min:x_max]
+        else:
+            return masked[:, y_min:y_max, x_min:x_max]
+    
+    def _extract_class_from_segmentation(
+        self,
+        array: NDArray[T],
+        class_value: int = 0,
+    ) -> NDArray[T]:
+        """Extract the class value from the given 2D or 3D array.
+        
+        The array must be segmented with integer values that represent classes. The function will extract the given
+        class only from the array and will return it.
+
+        Args:
+            array       : 2D or 3D segmented array.
+            class_value : integer value that represents the class you want to extract, something like 0, 1, 2 ...
+        """
+        if array.ndim not in (2, 3):
+            raise ValueError(f"Expected 2D or 3D array, got {array.ndim}D.")
+
+        # Ensure we're working with integer-like labels
+        if not np.issubdtype(array.dtype, np.integer) and not np.issubdtype(array.dtype, np.floating):
+            raise TypeError("Array must contain numeric class labels.")
+
+        # Extract class as boolean mask
+        mask = array == class_value
+
+        return mask
 
 
 # ------------------------------------------------------------------

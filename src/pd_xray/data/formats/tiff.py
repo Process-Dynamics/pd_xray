@@ -1,11 +1,15 @@
 import numpy as np
-from numpy.typing import NDArray
+from numpy.typing import DTypeLike, NDArray
 from pathlib import Path
 from typing import Any
 
 import tifffile  # type: ignore[import]
 
 from pd_xray.data.formats.base import FormatReader
+from pd_xray.core.logging import get_logger
+from pd_xray.core import T
+
+logger = get_logger(__name__)
 
 
 class TIFFReader(FormatReader):
@@ -17,14 +21,46 @@ class TIFFReader(FormatReader):
 
     _EXTENSIONS = {".tif", ".tiff"}
 
-    def read_single_file(self, path: str | Path) -> NDArray[np.float32]:
+    def load_stack(
+        self,
+        path: str | Path,
+        pattern: str = "*.tif",
+        dtype: DTypeLike = np.float32,
+    ) -> NDArray[T]:
+        """Load sorted stack from path into 3D volume"""
+        path = Path(path)
+        tiff_files = sorted(path.glob(pattern))
+        if not tiff_files:
+            raise FileNotFoundError(f"No TIFF files found in {path}")
+        logger.info(f"Found {len(tiff_files)} TIFF slices in {path}")
+
+        header = self.read_header(tiff_files[0])
+        ny, nx = header["shape"]
+        nz = len(tiff_files)
+
+        logger.info(f"Volume dimensions: Z={nz}, Y={ny}, X={nx}")
+
+        volume = np.zeros((nz, ny, nx), dtype=dtype)
+        for z, filepath in enumerate(tiff_files):
+            if z % 200 == 0:
+                logger.info(f"  Loading slice {z}/{nz}")
+            volume[z] = self.read(filepath, dtype=dtype)
+        return volume
+            
+            
+
+    def read_single_file(
+        self,
+        path: str | Path,
+        dtype: DTypeLike = np.float32,
+    ) -> NDArray[T]:
         """Read a single-frame TIFF file."""
         path = Path(path)
         if not self.can_read(path):
             raise FileNotFoundError(f"File not found or unsupported: {path}")
         try:
             data = tifffile.imread(str(path))
-            return data.astype(np.float32)
+            return data.astype(dtype)
         except Exception as e:
             raise IOError(f"Error reading TIFF file {path}: {e}")
 
@@ -33,7 +69,8 @@ class TIFFReader(FormatReader):
         path: str | Path,
         start_frame: int = -1,
         end_frame: int = -1,
-    ) -> NDArray[np.float32]:
+        dtype: DTypeLike = np.float32,
+    ) -> NDArray[T]:
         """Read a TIFF file, optionally slicing a frame range.
 
         Args:
@@ -62,7 +99,7 @@ class TIFFReader(FormatReader):
                         f"end_frame {end} is out of bounds for file with {n_frames} frames"
                     )
 
-                frames = [tif.pages[i].asarray().astype(np.float32) for i in range(start, end)]
+                frames = [tif.pages[i].asarray().astype(dtype) for i in range(start, end)]
 
             if not frames:
                 raise ValueError(
@@ -109,9 +146,10 @@ class TIFFReader(FormatReader):
     def write(
         self,
         path: str | Path,
-        data: NDArray[np.float32],
+        data: NDArray[T],
         path_exists_ok: bool = False,
         create_dirs: bool = True,
+        dtype: DTypeLike = np.float32,
     ) -> None:
         """Write a 2D or 3D array to a TIFF file."""
         path = Path(path)
@@ -120,6 +158,6 @@ class TIFFReader(FormatReader):
         if not path_exists_ok and path.exists():
             raise FileExistsError(f"File already exists: {path}")
         try:
-            tifffile.imwrite(str(path), data.astype(np.float32))
+            tifffile.imwrite(str(path), data.astype(dtype))
         except Exception as e:
             raise IOError(f"Error writing TIFF file {path}: {e}")
