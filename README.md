@@ -3,6 +3,94 @@ Process Dynamics Group Experiment Processing Library
 
 ---
 
+## Configuration
+
+`Config` loads a YAML file and lets you read values using dot-notation keys. It is the standard way to pass processing parameters through the pipeline without hardcoding them in scripts.
+
+### Loading a config file
+
+```python
+from pd_xray.core.config import Config
+
+config = Config("config.yaml")
+```
+
+A `FileNotFoundError` is raised if the file is missing, and a `ConfigError` if the YAML is invalid.
+
+### Reading values
+
+Use `.get()` for optional keys and `.require()` for keys that must be present:
+
+```python
+energy   = config.get("reconstruction.paganin.energy", default=25.0)
+raw_path = config.require("data.raw_path")
+gpu_ids  = config.get("hardware.gpu_ids", default=[0])
+```
+
+`.require()` raises `ConfigKeyError` immediately if the key is absent, so errors surface early rather than later in the pipeline.
+
+If you want to enforce a type at the same time:
+
+```python
+energy = config.get_typed("reconstruction.paganin.energy", float)
+```
+
+### Checking for optional sections
+
+```python
+if config.has("segmentation.model"):
+    model_path = config.require("segmentation.model")
+```
+
+### Building an ImageProcessor pipeline from config
+
+Store your processing steps in YAML and load them directly into `ImageProcessor`:
+
+```yaml
+# config.yaml
+processing:
+  steps:
+    - name: gaussian_blur
+      sigma: 1.5
+    - name: normalise
+    - name: clip
+      vmin: 0.0
+      vmax: 1.0
+```
+
+```python
+from pd_xray.processing import ImageProcessor
+
+steps = config.require("processing.steps")
+proc  = ImageProcessor(steps=steps)
+result = proc(image)
+```
+
+### Overriding values for an experiment
+
+`.set()` updates a value in memory without touching the file. Useful for running the same config with one parameter changed:
+
+```python
+config.set("reconstruction.paganin.energy", 30.0)
+```
+
+To apply a whole set of overrides at once, pass a dict to `.merge()`:
+
+```python
+config.merge({"reconstruction": {"paganin": {"energy": 30.0, "distance": 0.8}}})
+```
+
+### Passing a subsection to a function
+
+If a function only needs one part of the config, hand it a scoped view rather than the whole thing:
+
+```python
+recon_cfg = config.get_section("reconstruction")
+energy    = recon_cfg.get("paganin.energy")
+```
+
+---
+
 ## Image Processing
 
 `ImageProcessor` applies a configurable sequence of filters and transforms to 2D `(H, W)` or 3D `(Z, H, W)` NumPy arrays of any dtype. Build the pipeline once and reuse it across many images or volumes.
