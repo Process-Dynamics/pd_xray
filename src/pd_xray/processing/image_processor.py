@@ -435,6 +435,8 @@ class ImageProcessor:
         self,
         flat: NDArray,
         dark: NDArray,
+        normalise_denominator: bool = False,
+        epsilon: float = 1e-8,
         dtype: DTypeLike | None = None,
     ) -> "ImageProcessor":
         """Flat-field and dark-field correction: (image - dark) / (flat - dark).
@@ -442,7 +444,10 @@ class ImageProcessor:
         ``flat`` and ``dark`` are stored in the pipeline and applied to every image
         passed through it. If either is 3D it is averaged along axis 0 before use.
         """
-        return self._add_step("flat_dark_field_correction", dtype, flat=flat, dark=dark)
+        return self._add_step(
+            "flat_dark_field_correction", dtype,
+            flat=flat, dark=dark, normalise_denominator=normalise_denominator, epsilon=epsilon
+        )
 
     # ------------------------------------------------------------------
     # Spatial filters
