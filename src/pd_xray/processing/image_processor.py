@@ -167,6 +167,7 @@ class ImageProcessor:
         "extract_segmented_class"     : "_extract_class_from_segmentation",
         "flat_dark_field_correction"  : "_flat_dark_field_correction",
         "log_transform"           : "_log_transform",
+        "local_contrast_enhancement" : "_local_contrast_enhancement",
     }
 
     def __init__(self, steps: list[dict] | None = None) -> None:
@@ -465,6 +466,27 @@ class ImageProcessor:
             dtype: Optional output dtype. If None, the output dtype will be the same as the input.
         """
         return self._add_step("log_transform", dtype, epsilon=epsilon)
+    
+    def local_contrast_enhancement(
+        self,
+        sigma: float = 1.0,
+        epsilon: float = 1e-8,
+        dtype: DTypeLike | None = None,
+    ) -> "ImageProcessor":
+        """Enhance local contrast by subtracting a Gaussian-blurred version of the image.
+
+        The transformation is defined as: output = image - gaussian_blur(image, sigma) + epsilon.
+        This effectively enhances local details while suppressing low-frequency background variations.
+        Applied per Z-slice on 3D arrays.
+
+        Args:
+            sigma: Standard deviation for the Gaussian kernel used in blurring. Default is 10 pixels.
+            epsilon: Small constant added to the result to avoid zero or negative values. Default is 1e-8.
+            dtype: Optional output dtype. If None, the output dtype will be the same as the input.
+        """
+        return self._add_step(
+            "local_contrast_enhancement", dtype, sigma=sigma, epsilon=epsilon
+        )
 
     # ------------------------------------------------------------------
     # Spatial filters
@@ -893,6 +915,30 @@ class ImageProcessor:
             Log-transformed array (same shape as input, dtype as specified).
         """
         return -np.log(image.astype(np.float32, copy=False) + epsilon).astype(dtype)
+    
+    def _local_contrast_enhancement(
+        self,
+        image: NDArray[T],
+        sigma: float = 1.0,
+        epsilon: float = 1e-8,
+        dtype: DTypeLike = np.float32,
+    ) -> NDArray[T]:
+        """Enhance local contrast by dividing by a Gaussian-blurred version of the image.
+
+        Args:
+            image : Input 2D or 3D array.
+            sigma : Standard deviation for the Gaussian blur (default 1.0).
+            epsilon: Small constant added to avoid division by zero (default 1e-8).
+            dtype : Output dtype (default float32).
+        Returns:
+            Locally contrast-enhanced array (same shape as input, dtype as specified).
+        """
+        image = image.astype(np.float32, copy=False)
+        local_mean = gaussian_filter(image, sigma=sigma)
+        local_sq_mean = gaussian_filter(image ** 2, sigma=sigma)
+        local_variance = local_sq_mean - local_mean ** 2
+        local_std = np.sqrt(np.maximum(local_variance, 0))
+        return (image / (local_std + epsilon)).astype(dtype)
 
 
     def _extract_cylinder(self, array: NDArray[T], mask_ratio: float = 0.5) -> NDArray[T]:
