@@ -10,7 +10,7 @@ Process Dynamics Group Experiment Processing Library
 ### Loading a config file
 
 ```python
-from pd_xray.core.config import Config
+from pd_xray.core import Config
 
 config = Config("config.yaml")
 ```

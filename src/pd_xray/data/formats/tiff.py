@@ -26,7 +26,7 @@ class TIFFReader(FormatReader):
         path: str | Path,
         pattern: str = "*.tif",
         dtype: DTypeLike = np.float32,
-    ) -> NDArray[T]:
+    ) -> tuple[NDArray[T], list[Path]]:
         """Load sorted stack from path into 3D volume"""
         path = Path(path)
         tiff_files = sorted(path.glob(pattern))
@@ -45,7 +45,7 @@ class TIFFReader(FormatReader):
             if z % 200 == 0:
                 logger.info(f"  Loading slice {z}/{nz}")
             volume[z] = self.read(filepath, dtype=dtype)
-        return volume
+        return volume, tiff_files
             
             
 
