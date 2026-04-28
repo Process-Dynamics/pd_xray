@@ -62,6 +62,8 @@ def flat_dark_field_correction(
     for name, arr in (("image", image), ("flat", flat), ("dark", dark)):
         if arr.ndim not in (2, 3):
             raise ValueError(f"{name} must be 2D or 3D, got {arr.ndim}D.")
+    
+    _logger.info(f"Applying flat/dark correction with flat shape {flat.shape} and dark shape {dark.shape}")
 
     flat_2d: NDArray[np.float32] = (
         flat.mean(axis=0) if flat.ndim == 3 else flat
@@ -81,12 +83,20 @@ def flat_dark_field_correction(
             f"dark spatial dimensions {dark_2d.shape} do not match image ({h}, {w})."
         )
 
+    _logger.debug(
+        f"\nFlat 2D shape: {flat_2d.shape}, Dark 2D shape: {dark_2d.shape}"
+        f"\nFlat 2D stats: min={flat_2d.min()}, max={flat_2d.max()}, mean={flat_2d.mean()}"
+        f"\nDark 2D stats: min={dark_2d.min()}, max={dark_2d.max()}, mean={dark_2d.mean()}"
+    )
+
     img = image.astype(np.float32, copy=False)
-    denominator = flat_2d - dark_2d  # (H, W)
+    denominator = flat_2d - dark_2d
 
     if normalise_denominator:
+        _logger.debug("Normalising denominator by its mean value to preserve overall intensity scale.")
         mean_den= np.mean(denominator)
-        den_norm = denominator / np.maximum(mean_den, epsilon)
+        den_norm = denominator / (mean_den + epsilon)
+        den_norm = np.maximum(den_norm, epsilon)
         corrected: NDArray[np.float32] = (img - dark_2d) / den_norm
     else:
         # Replace zero-denominator pixels with 1 to avoid divide-by-zero, then mask
