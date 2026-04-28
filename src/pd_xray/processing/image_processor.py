@@ -26,6 +26,8 @@ def flat_dark_field_correction(
     image: NDArray,
     flat: NDArray,
     dark: NDArray,
+    normalise_denominator: bool = True,
+    epsilon: float = 1e-8,
 ) -> NDArray:
     """Apply flat-field and dark-field correction to a projection image or stack.
 
@@ -43,9 +45,12 @@ def flat_dark_field_correction(
     broadcast across all N frames along axis 0.
 
     Args:
-        image : 2D ``(H, W)`` or 3D ``(N, H, W)`` projection array.
-        flat  : 2D ``(H, W)`` or 3D ``(K, H, W)`` flat-field (beam, no sample).
-        dark  : 2D ``(H, W)`` or 3D ``(K, H, W)`` dark-field (no beam).
+        image                 : 2D ``(H, W)`` or 3D ``(N, H, W)`` projection array.
+        flat                  : 2D ``(H, W)`` or 3D ``(K, H, W)`` flat-field (beam, no sample).
+        dark                  : 2D ``(H, W)`` or 3D ``(K, H, W)`` dark-field (no beam).
+        normalise_denominator : If True, take the mean of the denominator and divide it with the denominator.
+        epsilon               : Small constant to avoid division by zero.
+
 
     Returns:
         Corrected float32 array of the same shape as ``image``.
@@ -79,9 +84,14 @@ def flat_dark_field_correction(
     img = image.astype(np.float32, copy=False)
     denominator = flat_2d - dark_2d  # (H, W)
 
-    # Replace zero-denominator pixels with 1 to avoid divide-by-zero, then mask
-    safe_denom = np.where(denominator == 0, 1.0, denominator)
-    corrected: NDArray[np.float32] = (img - dark_2d) / safe_denom
+    if normalise_denominator:
+        mean_den= np.mean(denominator)
+        den_norm = denominator / np.maximum(mean_den, epsilon)
+        corrected: NDArray[np.float32] = (img - dark_2d) / den_norm
+    else:
+        # Replace zero-denominator pixels with 1 to avoid divide-by-zero, then mask
+        safe_denom = np.where(denominator == 0, 1.0, denominator)
+        corrected: NDArray[np.float32] = (img - dark_2d) / safe_denom
 
     zero_mask = denominator == 0  # (H, W)
     if corrected.ndim == 3:
@@ -828,10 +838,21 @@ class ImageProcessor:
         return result
 
     def _flat_dark_field_correction(
-        self, image: NDArray, flat: NDArray, dark: NDArray
+        self,
+        image: NDArray,
+        flat: NDArray,
+        dark: NDArray,
+        normalise_denominator: bool = True,
+        epsilon: float = 1e-8,
     ) -> NDArray:
         """Delegate to the module-level flat_dark_field_correction function."""
-        return flat_dark_field_correction(image, flat=flat, dark=dark)
+        return flat_dark_field_correction(
+            image,
+            flat=flat,
+            dark=dark,
+            normalise_denominator=normalise_denominator,
+            epsilon=epsilon
+        )
 
     def _extract_cylinder(self, array: NDArray[T], mask_ratio: float = 0.5) -> NDArray[T]:
         """Apply a cylindrical mask and crop to the bounding box.
