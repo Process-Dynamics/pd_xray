@@ -103,12 +103,6 @@ def flat_dark_field_correction(
         safe_denom = np.where(denominator == 0, 1.0, denominator)
         corrected: NDArray[np.float32] = (img - dark_2d) / safe_denom
 
-    zero_mask = denominator == 0  # (H, W)
-    if corrected.ndim == 3:
-        corrected[:, zero_mask] = np.nan
-    else:
-        corrected[zero_mask] = np.nan
-
     return corrected
 
 
