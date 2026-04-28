@@ -166,6 +166,7 @@ class ImageProcessor:
         "cylindrical_mask"            : "_extract_cylinder",
         "extract_segmented_class"     : "_extract_class_from_segmentation",
         "flat_dark_field_correction"  : "_flat_dark_field_correction",
+        "log_transform"           : "_log_transform",
     }
 
     def __init__(self, steps: list[dict] | None = None) -> None:
@@ -452,6 +453,18 @@ class ImageProcessor:
             "flat_dark_field_correction", dtype,
             flat=flat, dark=dark, normalise_denominator=normalise_denominator, epsilon=epsilon
         )
+    
+    def log_transform(self, epsilon: float = 1e-8, dtype: DTypeLike | None = None) -> "ImageProcessor":
+        """Apply logarithmic transformation to enhance contrast in darker regions.
+
+        The transformation is defined as: output = log(image + epsilon), where
+        epsilon is a small constant added to avoid log(0). Applied per Z-slice on 3D arrays.
+
+        Args:
+            epsilon: Small constant to avoid log(0). Default is 1e-8.
+            dtype: Optional output dtype. If None, the output dtype will be the same as the input.
+        """
+        return self._add_step("log_transform", dtype, epsilon=epsilon)
 
     # ------------------------------------------------------------------
     # Spatial filters
@@ -862,6 +875,25 @@ class ImageProcessor:
             normalise_denominator=normalise_denominator,
             epsilon=epsilon
         )
+    
+    def _log_transform(
+        self,
+        image: NDArray[T],
+        epsilon: float = 1e-8,
+        dtype: DTypeLike = np.float32,
+    ) -> NDArray[T]:
+        """Apply logarithmic intensity transformation.
+
+        Args:
+            image : Input 2D or 3D array.
+            epsilon: Small constant added to avoid log(0). Default 1e-8.
+            dtype : Output dtype (default float32).
+
+        Returns:
+            Log-transformed array (same shape as input, dtype as specified).
+        """
+        return -np.log(image.astype(np.float32, copy=False) + epsilon).astype(dtype)
+
 
     def _extract_cylinder(self, array: NDArray[T], mask_ratio: float = 0.5) -> NDArray[T]:
         """Apply a cylindrical mask and crop to the bounding box.
