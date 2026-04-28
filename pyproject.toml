@@ -22,7 +22,6 @@ dependencies = [
     "nbformat>=5.10.4",
     "ipykernel>=7.2.0",
     "pyvista>=0.47.3",
-    "cucim>=23.10.0",
     "connected-components-3d>=3.26.1",
 ]
 

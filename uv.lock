@@ -329,19 +329,6 @@ wheels = [
 ]
 
 [[package]]
-name = "cucim"
-version = "23.10.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "click" },
-    { name = "lazy-loader" },
-    { name = "numpy" },
-]
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/90/9d/b6df8abb3d33ff5f728f00a6074ca68e8790c20d1b9a0828412c9cd17285/cucim-23.10.0-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:2c061ad28c3c1fa67bb62260f0a556f354c8ec2d6e3811eece375ed896d62945", size = 9720570, upload-time = "2023-10-17T20:24:03.265Z" },
-]
-
-[[package]]
 name = "cycler"
 version = "0.12.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1455,7 +1442,6 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "connected-components-3d" },
-    { name = "cucim" },
     { name = "dask" },
     { name = "fabio" },
     { name = "ipykernel" },
@@ -1486,7 +1472,6 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "connected-components-3d", specifier = ">=3.26.1" },
-    { name = "cucim", specifier = ">=23.10.0" },
     { name = "dask", specifier = ">=2026.3.0" },
     { name = "fabio", specifier = ">=2025.10.0" },
     { name = "ipykernel", specifier = ">=7.2.0" },
