@@ -938,7 +938,7 @@ class ImageProcessor:
         local_sq_mean = gaussian_filter(image ** 2, sigma=sigma)
         local_variance = local_sq_mean - local_mean ** 2
         local_std = np.sqrt(np.maximum(local_variance, 0))
-        return (image / (local_std + epsilon)).astype(dtype)
+        return ((image - local_mean) / (local_std + epsilon)).astype(dtype)
 
 
     def _extract_cylinder(self, array: NDArray[T], mask_ratio: float = 0.5) -> NDArray[T]:
