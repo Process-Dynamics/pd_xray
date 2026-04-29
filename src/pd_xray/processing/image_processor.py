@@ -159,6 +159,7 @@ class ImageProcessor:
         "normalise"               : "_normalise",
         "clip"                    : "_clip",
         "clahe"                   : "_clahe",
+        "rescale_intensity"       : "_rescale_intensity",
         "rotate"                  : "_rotate",
         "crop"                    : "_crop",
         "resize"                  : "_resize",
@@ -380,6 +381,17 @@ class ImageProcessor:
         """Contrast Limited Adaptive Histogram Equalization. Applied per Z-slice on 3D arrays."""
         return self._add_step(
             "clahe", dtype, clip_limit=clip_limit, tile_grid_size=tile_grid_size
+        )
+    
+    def rescale_intensity(
+        self,
+        p1: float | None = None,
+        p99: float | None = None,
+        dtype: DTypeLike | None = None,
+    ) -> "ImageProcessor":
+        """Rescale intensities to a specified range. Applied per Z-slice on 3D arrays."""
+        return self._add_step(
+            "rescale_intensity", dtype, p1=p1, p99=p99
         )
 
     def rotate(self, angle_deg: float, dtype: DTypeLike | None = None) -> "ImageProcessor":
@@ -769,6 +781,40 @@ class ImageProcessor:
 
         result[nan_mask] = np.nan
         return result
+    
+    def _rescale_intensity(
+        self,
+        image: NDArray[T],
+        p1: float = 2.0,
+        p99: float = 98.0,
+        dtype: DTypeLike = np.float32,
+    ) -> NDArray[T]:
+        """Rescale intensities to the range defined by the p1 and p99 percentiles.
+
+        This is a common contrast enhancement technique that stretches the intensity
+        histogram to use the full dynamic range while being robust to outliers.
+
+        Args:
+            image : Input 2D or 3D array.
+            p1    : Lower percentile (default 2.0).
+            p99   : Upper percentile (default 98.0).
+            dtype : Output dtype (default float32).
+
+        Returns:
+            Rescaled array with specified dtype.
+        """
+        img = image.astype(np.float32, copy=False)
+        if p1 is None:
+            p1 = 0.0
+        if p99 is None:
+            p99 = 100.0
+        lower, upper = np.percentile(img, (p1, p99))
+
+        if upper - lower < 1e-8:
+            return np.zeros_like(img, dtype=dtype)
+
+        rescaled = np.clip(img, lower, upper)
+        return rescaled.astype(dtype, copy=False)
 
     # ------------------------------------------------------------------
     # Geometric transforms
