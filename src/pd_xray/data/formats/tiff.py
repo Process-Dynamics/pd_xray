@@ -1,9 +1,10 @@
 import numpy as np
 from numpy.typing import DTypeLike, NDArray
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import tifffile  # type: ignore[import]
+from PIL import Image  # type: ignore[import]
 
 from pd_xray.data.formats.base import FormatReader
 from pd_xray.core.logging import get_logger
@@ -161,3 +162,63 @@ class TIFFReader(FormatReader):
             tifffile.imwrite(str(path), data.astype(dtype))
         except Exception as e:
             raise IOError(f"Error writing TIFF file {path}: {e}")
+
+    def write_as(
+        self,
+        path: str | Path,
+        data: NDArray[T],
+        fmt: Literal["png", "jpeg"],
+        path_exists_ok: bool = False,
+        create_dirs: bool = True,
+    ) -> None:
+        """Write a 2D or 3D array as PNG or JPEG with maximum quality.
+
+        Data is normalised globally to the target bit depth so that relative
+        intensities are preserved across slices. 3D volumes (Z, Y, X) are
+        written slice-by-slice into a sub-directory named after the ``path``
+        stem; 2D arrays are written directly to ``path``.
+
+        PNG: 16-bit grayscale, lossless, no deflate compression.
+        JPEG: 8-bit grayscale, quality=100, no chroma subsampling.
+        """
+        path = Path(path)
+        if data.ndim not in (2, 3):
+            raise ValueError(f"data must be 2D or 3D, got shape {data.shape}")
+
+        ext = ".png" if fmt == "png" else ".jpg"
+
+        arr = data.astype(np.float64)
+        arr_min, arr_max = arr.min(), arr.max()
+        scale = arr_max - arr_min
+        normalized = (arr - arr_min) / scale if scale > 0 else np.zeros_like(arr)
+
+        if fmt == "png":
+            pixel_data = (normalized * 65535).astype(np.uint16)
+        else:
+            pixel_data = (normalized * 255).astype(np.uint8)
+
+        def _save_frame(frame: NDArray[T], out_path: Path) -> None:
+            if not path_exists_ok and out_path.exists():
+                raise FileExistsError(f"File already exists: {out_path}")
+            img = Image.fromarray(frame)
+            if fmt == "png":
+                img.save(str(out_path), format="PNG", compress_level=0)
+            else:
+                img.save(str(out_path), format="JPEG", quality=100, subsampling=0)
+
+        if data.ndim == 2:
+            out = path.with_suffix(ext)
+            if create_dirs:
+                out.parent.mkdir(parents=True, exist_ok=True)
+            _save_frame(pixel_data, out)
+            logger.info(f"Written {fmt.upper()} → {out}")
+        else:
+            out_dir = path.parent / path.stem
+            if create_dirs:
+                out_dir.mkdir(parents=True, exist_ok=True)
+            nz = pixel_data.shape[0]
+            for z in range(nz):
+                if z % 200 == 0:
+                    logger.info(f"  Writing slice {z}/{nz}")
+                _save_frame(pixel_data[z], out_dir / f"slice_{z:04d}{ext}")
+            logger.info(f"Written {nz} {fmt.upper()} slices → {out_dir}")
