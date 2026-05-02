@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -89,3 +90,13 @@ class LocalBackend(StorageBackend):
     def write_file_from_local(self, local_path: str, remote_path: str) -> None:
         # For local backend, this is just a file copy from one local path to another.
         self.read_file_to_local(remote_path=remote_path, local_path=local_path)
+
+    @contextmanager
+    def open_fileobj(self, path: str):
+        full_path = self._root / path
+        if not full_path.exists():
+            raise FileNotFoundError(f"File does not exist: {full_path}")
+        if not full_path.is_file():
+            raise IsADirectoryError(f"Path is not a file: {full_path}")
+        with open(full_path, "rb") as f:
+            yield f

@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
-from typing import Self
+from typing import IO, Self
 
 
 @dataclass(frozen=True)
@@ -138,4 +139,19 @@ class StorageBackend(ABC):
         path: str
     ) -> int:
         """Return file size in bytes."""
+        ...
+
+    @abstractmethod
+    def open_fileobj(self, path: str) -> AbstractContextManager[IO[bytes]]:
+        """Return a seekable, read-only binary file-like object for the given path.
+
+        Must be used as a context manager. The object is valid only inside the
+        with-block; behaviour outside it is undefined.
+
+        Usage::
+
+            with backend.open_fileobj("scan.h5") as f:
+                with reader.lazy_open(f) as arr:
+                    frame = arr[0]
+        """
         ...
