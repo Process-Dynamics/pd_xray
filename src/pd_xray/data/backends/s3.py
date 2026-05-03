@@ -167,7 +167,7 @@ class S3Backend(StorageBackend):
                 s3={"addressing_style": self._addressing_style},
                 signature_version="s3v4",
                 connect_timeout=10,
-                read_timeout=30,
+                read_timeout=180,  # three minutes
                 retries={"max_attempts": 3, "mode": "standard"},
             ),
             **self._credentials,
