@@ -12,21 +12,25 @@ from pd_xray.core.logging import get_logger
 
 logger = get_logger(__name__)
 
-_BLOCK_SIZE = 2 * 1024 * 1024  # 2 MB read-ahead blocks
+_DEFAULT_BLOCK_SIZE = 32 * 1024 * 1024  # 32 MB — keeps B-tree + chunk data in as few requests as possible
 
 
 class _S3RangeFile:
     """Seekable, read-only file-like object backed by boto3 range requests.
 
-    Reads are served from 2 MB cached blocks so that the many small sequential
-    reads a format reader makes when opening a file result in a small number of
-    S3 API calls.
+    Reads are served from cached blocks. The block size controls how many
+    S3 GetObject requests are needed for a given access pattern. HDF5 files
+    require many scattered reads (B-tree traversal + chunk data), so a large
+    block size (32+ MB) is important to minimise round trips on high-latency
+    servers. A single HDF5 chunk for a 2048x2048 uint16 frame is ~8 MB, so
+    blocks smaller than that produce multiple requests per chunk.
     """
 
-    def __init__(self, client: Any, bucket: str, key: str) -> None:
+    def __init__(self, client: Any, bucket: str, key: str, block_size: int = _DEFAULT_BLOCK_SIZE) -> None:
         self._client = client
         self._bucket = bucket
         self._key = key
+        self._block_size = block_size
         self._pos = 0
         response = client.head_object(Bucket=bucket, Key=key)
         self._size: int = response["ContentLength"]
@@ -36,8 +40,8 @@ class _S3RangeFile:
         cached = self._cache.get(block_idx)
         if cached is not None:
             return cached
-        start = block_idx * _BLOCK_SIZE
-        end = min(start + _BLOCK_SIZE - 1, self._size - 1)
+        start = block_idx * self._block_size
+        end = min(start + self._block_size - 1, self._size - 1)
         response = self._client.get_object(
             Bucket=self._bucket,
             Key=self._key,
@@ -54,8 +58,8 @@ class _S3RangeFile:
         parts: list[bytes] = []
         pos = self._pos
         while pos < end:
-            block_idx = pos // _BLOCK_SIZE
-            offset = pos % _BLOCK_SIZE
+            block_idx = pos // self._block_size
+            offset = pos % self._block_size
             block = self._fetch_block(block_idx)
             chunk = block[offset : offset + (end - pos)]
             parts.append(chunk)
@@ -113,6 +117,14 @@ class S3Backend(StorageBackend):
                            require "path". AWS S3 uses "virtual" by default, but also
                            accepts "path". With "virtual", boto3 rewrites the URL to
                            bucket.host.com which breaks most non-AWS endpoints.
+        block_size       : Size in bytes of each cached read block used by open_fileobj().
+                           Default 32 MB. HDF5 access requires many scattered reads
+                           (B-tree traversal + chunk data), so each unique block in the file
+                           is one S3 request. Larger blocks mean fewer requests, which is
+                           critical on high-latency servers. A typical synchrotron frame
+                           (2048x2048 uint16) is ~8 MB, so the default covers one frame per
+                           request with room for B-tree metadata. Increase to 64 MB or higher
+                           if frames are larger or if the server latency is very high.
 
     Credentials are passed at connect() time via keyword arguments:
         aws_access_key_id     : Access key.
@@ -127,12 +139,14 @@ class S3Backend(StorageBackend):
         region_name: str | None = None,
         prefix: str = "",
         addressing_style: str = "path",
+        block_size: int = _DEFAULT_BLOCK_SIZE,
     ) -> None:
         self._bucket = bucket
         self._endpoint_url = endpoint_url
         self._region_name = region_name
         self._prefix = prefix.strip("/")
         self._addressing_style = addressing_style
+        self._block_size = block_size
         self._client: Any = None
         self._credentials: dict[str, str] = {}
 
@@ -281,7 +295,7 @@ class S3Backend(StorageBackend):
         """
         self._require_connected()
         key = self._full_key(path)
-        rf = _S3RangeFile(self._client, self._bucket, key)
+        rf = _S3RangeFile(self._client, self._bucket, key, self._block_size)
         try:
             yield rf
         finally:
