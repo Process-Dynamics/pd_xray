@@ -232,12 +232,10 @@ proc = (
 
 `S3Backend` handles all storage operations against any S3-compatible store (AWS, Ceph, MinIO). It is format-agnostic: it lists keys, moves bytes, and exposes `open_fileobj()` so format readers can stream a file directly without downloading it first. `HDF5Reader` is responsible for all HDF5-specific operations.
 
-### Listing available files
-
-If you know the prefix for your experiment, pass it directly. If you do not know what is in the bucket, omit the prefix to browse from the root.
+### Connecting to the store
 
 ```python
-from pd_xray.data import S3Backend
+from pd_xray.data import S3Backend, HDF5Reader
 
 backend = S3Backend(
     bucket="xray-data",
@@ -245,48 +243,50 @@ backend = S3Backend(
     prefix="campaign/experiment/data",
 )
 
-with backend:
-    backend.connect(
-        aws_access_key_id="YOUR_KEY",
-        aws_secret_access_key="YOUR_SECRET",
-    )
-
-    # List everything under the prefix
-    files = backend.list_files()
-    for f in files:
-        print(f.path, f.size_bytes)
-
-    # Filter to HDF5 files only
-    hdf5_files = backend.list_files(pattern="*.h5")
-
-# Browse from the bucket root without a prefix
-with S3Backend(bucket="xray-data", endpoint_url="https://s3.endpoint.ac.uk") as b:
-    b.connect(aws_access_key_id="YOUR_KEY", aws_secret_access_key="YOUR_SECRET")
-    top_level = b.list_files()
-```
-
-### Inspecting an HDF5 file
-
-`connect()` must always be called before any data operation. `open_fileobj()` and all other backend methods will raise a `RuntimeError` if called before `connect()`.
-
-`reader.inspect()` only accepts a local file path, not a file-like object. To check shape and dtype without downloading, use `reader.lazy_open()` with the file object from `backend.open_fileobj()`. For the full structure (all groups, datasets, and attributes) you need a local copy first.
-
-```python
-from pd_xray.data import S3Backend, HDF5Reader
+backend.connect(
+    aws_access_key_id="YOUR_KEY",
+    aws_secret_access_key="YOUR_SECRET",
+)
 
 reader = HDF5Reader()
+```
 
-with backend:
-    backend.connect(aws_access_key_id="YOUR_KEY", aws_secret_access_key="YOUR_SECRET")
+`connect()` must be called before any data operation. All backend methods raise `RuntimeError` if called before `connect()`. `connect()` itself makes no network call — the first real request happens when you call `list_files()` or any read method.
 
-    # Check shape and dtype over the network, no full download
-    # connect() must be called before any data operation
-    with reader.lazy_open_remote(backend, "scan_0001.h5") as arr:
-        print(arr.shape)   # e.g. (2000, 2048, 2048)
-        print(arr.dtype)
+`S3Backend` can also be used as a context manager, which calls `disconnect()` automatically on exit:
 
-    # Full structure requires a local copy -- inspect() does not accept file objects
-    backend.read_file_to_local("scan_0001.h5", "/scratch/scan_0001.h5")
+```python
+with S3Backend(bucket="xray-data", endpoint_url="https://s3.endpoint.ac.uk") as b:
+    b.connect(aws_access_key_id="YOUR_KEY", aws_secret_access_key="YOUR_SECRET")
+    files = b.list_files()
+```
+
+### Listing available files
+
+```python
+# List everything under the configured prefix
+files = backend.list_files()
+for f in files:
+    print(f.path, f.size_bytes)
+
+# Filter to HDF5 files only
+hdf5_files = backend.list_files(pattern="*.h5")
+```
+
+### Checking shape and dtype
+
+`lazy_open_remote` reads only the HDF5 superblock and chunk index — a handful of range requests even for a 90 GB file. Use it to check shape and dtype before deciding what to load.
+
+```python
+with reader.lazy_open_remote(backend, "scan_0001.h5") as arr:
+    print(arr.shape)   # e.g. (2000, 2048, 2048)
+    print(arr.dtype)
+```
+
+For the full file structure (all groups, datasets, and attributes), `inspect()` only accepts a local path — download the file first:
+
+```python
+backend.read_file_to_local("scan_0001.h5", "/scratch/scan_0001.h5")
 
 structure = reader.inspect("/scratch/scan_0001.h5")
 print(structure["groups"])    # list of group paths
@@ -296,36 +296,134 @@ header = reader.read_header("/scratch/scan_0001.h5")
 print(header["shape"], header["n_frames"], header["attrs"])
 ```
 
-### Loading slices as NumPy arrays without downloading
+### Loading slices without downloading
 
-`backend.open_fileobj()` returns a seekable byte stream backed by range requests. Passing it to `reader.lazy_open()` gives you a `LazyHDF5Array` that fetches only the HDF5 chunks you actually index. For a 130 GB file this means loading one frame costs a few MB, not the whole file.
+`lazy_open_remote` returns a `LazyHDF5Array` that fetches only the HDF5 chunks you index, using S3 range requests under the hood. No pixel data is downloaded until you slice the array.
 
 ```python
-with backend:
-    backend.connect(aws_access_key_id="YOUR_KEY", aws_secret_access_key="YOUR_SECRET")
-
-    with reader.lazy_open_remote(backend, "scan_0001.h5") as arr:
-        frame = arr[0]           # fetches only the chunks for frame 0
-        stack = arr[100:120]     # fetches only those 20 frames
-        tile  = arr[0, :512, :512]
+with reader.lazy_open_remote(backend, "scan_0001.h5") as arr:
+    frame = arr[0]            # fetches only the chunks for frame 0
+    stack = arr[100:120]      # fetches only those 20 frames
+    tile  = arr[0, :512, :512]
 ```
 
-If you have already downloaded the file, use `reader.lazy_read()` instead. It does not need a context manager because the file is opened and closed on each access.
+**Performance and block size.** HDF5 access requires many scattered reads — the library must traverse a B-tree to locate each chunk before it can fetch the data. Each unique region of the file that h5py touches is one S3 `GetObject` request. The `block_size` parameter (default 32 MB) controls the granularity of those requests. A larger value means fewer round trips, which matters on high-latency servers.
+
+As a rough guide for a 2048x2048 uint16 dataset (one frame ~8 MB uncompressed):
+
+| block_size | Approximate requests for 10 frames |
+|---|---|
+| 2 MB | ~150 |
+| 32 MB (default) | ~12 |
+| 128 MB | ~5 |
 
 ```python
+backend = S3Backend(
+    bucket="xray-data",
+    endpoint_url="https://s3.endpoint.ac.uk",
+    prefix="campaign/experiment/data",
+    block_size=128 * 1024 * 1024,   # 128 MB for a high-latency server
+)
+```
+
+The right value depends on your server's latency and the size of the HDF5 chunks in your files. Start with the default; if slices are taking several minutes, increase `block_size`.
+
+### Downloading a file to local disk
+
+If you need to make many different slices from the same file, or run operations that require the full dataset, download it once and read locally. A single sequential download is faster than many range requests.
+
+```python
+backend.read_file_to_local("scan_0001.h5", "/scratch/scan_0001.h5")
+
 arr = reader.lazy_read("/scratch/scan_0001.h5")
 frame = arr[0]
+stack = arr[100:120]
 ```
 
-### Downloading a file to a permanent local location
+`lazy_read` does not need a context manager — the file is opened and closed on each slice access. The parent directory is created automatically if it does not exist.
+
+---
+
+## Visualisation
+
+`view_frames`, `save_selection`, and `apply_and_view` are designed for inspecting and saving array sections after loading them from remote or local storage.
 
 ```python
-with backend:
-    backend.connect(aws_access_key_id="YOUR_KEY", aws_secret_access_key="YOUR_SECRET")
-    backend.read_file_to_local("scan_0001.h5", "/data/local/scan_0001.h5")
+from pd_xray.visualisation import view_frames, save_selection, apply_and_view
 ```
 
-The parent directory is created automatically if it does not exist.
+### Viewing frames
+
+`view_frames` accepts a 2D `(H, W)` image or a 3D `(Z, H, W)` stack. In Jupyter notebooks it renders an HTML slider that works with the default inline backend — no extra packages needed. Outside notebooks it uses a matplotlib Slider widget.
+
+```python
+with reader.lazy_open_remote(backend, "scan_0001.h5") as arr:
+    section = arr[100:120]   # loads 20 frames into memory
+
+view_frames(section)
+view_frames(section, cmap="viridis", title="Scan 0001 frames 100-120")
+```
+
+### Saving a selection
+
+`save_selection` wraps `np.save`. It appends `.npy` if the path does not already have that extension and creates any missing parent directories.
+
+```python
+save_selection(section, "/scratch/scan_0001_frames_100_120.npy")
+
+# Load it back
+import numpy as np
+arr = np.load("/scratch/scan_0001_frames_100_120.npy")
+```
+
+### Applying image processing and viewing
+
+`apply_and_view` runs an `ImageProcessor` pipeline on the array, displays the result, and returns the processed array so you can save it or inspect it further.
+
+```python
+from pd_xray.processing import ImageProcessor
+
+proc = (
+    ImageProcessor()
+    .gaussian_blur(sigma=1.5)
+    .normalise()
+)
+
+processed = apply_and_view(section, proc)
+save_selection(processed, "/scratch/scan_0001_processed.npy")
+```
+
+### End-to-end example
+
+```python
+from pd_xray.data import S3Backend, HDF5Reader
+from pd_xray.processing import ImageProcessor
+from pd_xray.visualisation import view_frames, apply_and_view, save_selection
+
+backend = S3Backend(
+    bucket="xray-data",
+    endpoint_url="https://s3.endpoint.ac.uk",
+    prefix="campaign/experiment/data",
+    block_size=128 * 1024 * 1024,
+)
+backend.connect(aws_access_key_id="YOUR_KEY", aws_secret_access_key="YOUR_SECRET")
+reader = HDF5Reader()
+
+# Check what is in the file
+with reader.lazy_open_remote(backend, "scan_0001.h5") as arr:
+    print(arr.shape, arr.dtype)
+
+# Load a section and inspect it
+with reader.lazy_open_remote(backend, "scan_0001.h5") as arr:
+    section = arr[-20:]        # last 20 frames
+
+view_frames(section)           # browse raw frames
+
+# Apply processing and save
+proc = ImageProcessor().gaussian_blur(sigma=1.5).normalise()
+processed = apply_and_view(section, proc, title="Processed")
+save_selection(processed, "/scratch/scan_0001_last20_processed.npy")
+```
 
 ---
 
