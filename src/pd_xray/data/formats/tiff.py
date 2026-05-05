@@ -167,7 +167,7 @@ class TIFFReader(FormatReader):
         self,
         path: str | Path,
         data: NDArray[T],
-        fmt: Literal["png", "jpeg"],
+        fmt: Literal["png", "jpeg", "tiff"],
         path_exists_ok: bool = False,
         create_dirs: bool = True,
     ) -> None:
@@ -181,6 +181,9 @@ class TIFFReader(FormatReader):
         PNG: 16-bit grayscale, lossless, no deflate compression.
         JPEG: 8-bit grayscale, quality=100, no chroma subsampling.
         """
+        if fmt == "tiff":
+            self.write(path, data, path_exists_ok=path_exists_ok, create_dirs=create_dirs)
+            return
         path = Path(path)
         if data.ndim not in (2, 3):
             raise ValueError(f"data must be 2D or 3D, got shape {data.shape}")
