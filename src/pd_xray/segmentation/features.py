@@ -2,7 +2,7 @@ import numpy as np
 from numpy.typing import NDArray
 from scipy.ndimage import gaussian_filter, median_filter, uniform_filter
 
-from pd_xray.processing.image_processor import Image2DProcessor
+from pd_xray.processing import ImageProcessor
 
 FEATURE_NAMES = [
     "intensity",
@@ -51,7 +51,12 @@ def extract_features(image: NDArray[np.float32]) -> NDArray[np.float32]:
         local_std = np.sqrt(np.maximum(mean_sq - mean ** 2, 0.0)).astype(np.float32)
         features.append(local_std.ravel())
 
-    proc = Image2DProcessor(steps=[{"name": "clahe", "clip_limit": 3.0}])
+    proc = (
+        ImageProcessor()
+        .clahe(
+            clip_limit=3.0
+        )
+    )
     clahe_img = proc(image)
     c_min, c_max = float(clahe_img.min()), float(clahe_img.max())
     clahe_norm = ((clahe_img - c_min) / (c_max - c_min + 1e-8)).astype(np.float32)

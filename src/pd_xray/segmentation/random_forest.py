@@ -9,7 +9,7 @@ import joblib
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import classification_report, confusion_matrix
 
-from pd_xray.processing.image_processor import Image2DProcessor
+from pd_xray.processing import ImageProcessor
 from pd_xray.segmentation.features import extract_features, FEATURE_NAMES
 from pd_xray.core.logging import get_logger
 
@@ -26,7 +26,7 @@ DEFAULT_PREPROCESSING: list[dict] = [
 class RFSegmenter:
     """Pixel-wise random forest segmenter for 2D images.
 
-    Preprocessing (via Image2DProcessor) is integrated at three levels:
+    Preprocessing (via ImageProcessor) is integrated at three levels:
 
     1. **Saved** — set at ``__init__`` or at ``fit()``.  Persisted with the
        model (``save`` / ``load``) and applied automatically to every
@@ -42,7 +42,7 @@ class RFSegmenter:
     Example::
 
         from pd_xray.segmentation import RFSegmenter, LabelledDataset
-        from pd_xray.processing.image_processor import Image2DProcessor
+        from pd_xray.processing import ImageProcessor
 
         ds    = LabelledDataset("data/labelled_data")
         pairs = ds.load_pairs()
@@ -92,7 +92,7 @@ class RFSegmenter:
             n_jobs:              Parallel jobs for sklearn (-1 = all cores).
             random_state:        Reproducibility seed.
             class_names:         Mapping ``{class_index: name}`` for reports.
-            preprocessing_steps: Image2DProcessor step dicts applied before
+            preprocessing_steps: ImageProcessor step dicts applied before
                                  feature extraction.  Saved with the model.
                                  Defaults to normalise + light Gaussian blur.
         """
@@ -121,7 +121,7 @@ class RFSegmenter:
 
     def _resolve_processor(
         self, override: Optional[list[dict]]
-    ) -> Optional[Image2DProcessor]:
+    ) -> Optional[ImageProcessor]:
         """Return the processor to use for a single operation.
 
         Args:
@@ -129,15 +129,15 @@ class RFSegmenter:
                       are used.  Pass an empty list ``[]`` to skip preprocessing.
 
         Returns:
-            ``Image2DProcessor`` instance, or ``None`` when there are no steps.
+            ``ImageProcessor`` instance, or ``None`` when there are no steps.
         """
         steps = override if override is not None else self._preprocessing_steps
-        return Image2DProcessor(steps=steps) if steps else None
+        return ImageProcessor(steps=steps) if steps else None
 
     def _preprocess(
         self,
         image: NDArray[np.float32],
-        processor: Optional[Image2DProcessor],
+        processor: Optional[ImageProcessor],
     ) -> NDArray[np.float32]:
         if processor is None:
             return image
@@ -149,7 +149,7 @@ class RFSegmenter:
     def _features_and_mask_for(
         self,
         image: NDArray[np.float32],
-        processor: Optional[Image2DProcessor],
+        processor: Optional[ImageProcessor],
     ) -> tuple[NDArray[np.float32], NDArray[np.bool_]]:
         """Preprocess, derive valid-pixel mask, then extract features.
 
