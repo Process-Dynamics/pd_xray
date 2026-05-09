@@ -31,6 +31,8 @@ def parse_timestep(name: str) -> int | None:
 
 
 def _get_backend(conn: dict) -> SFTPBackend:
+    if _stop.is_set():
+        raise RuntimeError("Shutdown in progress.")
     b = getattr(_thread_local, "backend", None)
     if b is None or not b.isconnected:
         b = SFTPBackend(host=conn["host"], port=conn["port"], root=conn["remote"])
@@ -160,7 +162,11 @@ def main() -> None:
     except KeyboardInterrupt:
         logger.info("Interrupted — stopping workers, finishing in-progress downloads...")
         _stop.set()
-        pool.shutdown(wait=True, cancel_futures=True)
+        try:
+            pool.shutdown(wait=True, cancel_futures=True)
+        except KeyboardInterrupt:
+            logger.warning("Second interrupt — forcing immediate exit.")
+            pool.shutdown(wait=False, cancel_futures=True)
         for tmp in local_root.rglob("*.tmp"):
             tmp.unlink(missing_ok=True)
             logger.info(f"Removed partial file: {tmp}")
