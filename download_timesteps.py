@@ -2,6 +2,7 @@
 import argparse
 import logging
 import re
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -20,21 +21,38 @@ _FILENAME_RE = re.compile(
     re.IGNORECASE,
 )
 
+_thread_local = threading.local()
+_stop = threading.Event()
+
 
 def parse_timestep(name: str) -> int | None:
     m = _FILENAME_RE.match(name)
     return int(m.group(1)) if m else None
 
 
-def download_file(backend: SFTPBackend, remote_path: str, local_path: Path, retries: int = 3) -> bool:
+def _get_backend(conn: dict) -> SFTPBackend:
+    b = getattr(_thread_local, "backend", None)
+    if b is None or not b.isconnected:
+        b = SFTPBackend(host=conn["host"], port=conn["port"], root=conn["remote"])
+        b.connect(username=conn["username"], password=conn["password"])
+        _thread_local.backend = b
+    return b
+
+
+def download_file(conn: dict, remote_path: str, local_path: Path, retries: int = 3) -> bool:
+    if _stop.is_set():
+        return False
     tmp = local_path.with_suffix(local_path.suffix + ".tmp")
     for attempt in range(1, retries + 1):
         try:
+            backend = _get_backend(conn)
             backend.read_file_to_local(remote_path, str(tmp))
             tmp.rename(local_path)
             return True
         except Exception as e:
             tmp.unlink(missing_ok=True)
+            if _stop.is_set():
+                return False
             if attempt < retries:
                 logger.warning(f"Attempt {attempt}/{retries} failed for {remote_path}: {e}")
                 time.sleep(2 ** attempt)
@@ -58,12 +76,21 @@ def main() -> None:
     local_root = Path(args.local)
     local_root.mkdir(parents=True, exist_ok=True)
 
-    backend = SFTPBackend(host=args.host, port=args.port, root=args.remote)
-    backend.connect(username=args.username, password=args.password)
+    conn = {
+        "host": args.host,
+        "port": args.port,
+        "remote": args.remote,
+        "username": args.username,
+        "password": args.password,
+    }
+
+    listing_backend = SFTPBackend(host=args.host, port=args.port, root=args.remote)
+    listing_backend.connect(username=args.username, password=args.password)
     logger.info(f"Connected to {args.host}:{args.port}{args.remote}")
 
     logger.info("Listing remote files...")
-    all_files = backend.list_files(pattern="*.tif")
+    all_files = listing_backend.list_files(pattern="*.tif")
+    listing_backend.disconnect()
     logger.info(f"Found {len(all_files)} files.")
 
     by_timestep: dict[int, list[str]] = {}
@@ -84,7 +111,6 @@ def main() -> None:
 
     if not to_download:
         logger.info("Nothing to download.")
-        backend.disconnect()
         return
 
     total = sum(len(v) for v in to_download.values())
@@ -96,15 +122,16 @@ def main() -> None:
     completed = 0
     failed = 0
     start = time.time()
+    pool = ThreadPoolExecutor(max_workers=args.workers)
 
-    with ThreadPoolExecutor(max_workers=args.workers) as pool:
+    try:
         future_to_path: dict = {}
         for ts, files in sorted(to_download.items()):
             folder = local_root / f"t{ts}"
             folder.mkdir(parents=True, exist_ok=True)
             for remote_path in files:
                 local_path = folder / Path(remote_path).name
-                f = pool.submit(download_file, backend, remote_path, local_path)
+                f = pool.submit(download_file, conn, remote_path, local_path)
                 future_to_path[f] = remote_path
 
         for future in as_completed(future_to_path):
@@ -128,8 +155,19 @@ def main() -> None:
                     f"{rate:.1f} files/s | ETA {eta / 60:.1f} min"
                 )
 
-    logger.info(f"Finished. {completed}/{total} downloaded. {failed} failed.")
-    backend.disconnect()
+        logger.info(f"Finished. {completed}/{total} downloaded. {failed} failed.")
+
+    except KeyboardInterrupt:
+        logger.info("Interrupted — stopping workers, finishing in-progress downloads...")
+        _stop.set()
+        pool.shutdown(wait=True, cancel_futures=True)
+        for tmp in local_root.rglob("*.tmp"):
+            tmp.unlink(missing_ok=True)
+            logger.info(f"Removed partial file: {tmp}")
+        logger.info(f"Stopped. {completed}/{total} downloaded before interrupt. {failed} failed.")
+
+    finally:
+        pool.shutdown(wait=False)
 
 
 if __name__ == "__main__":
