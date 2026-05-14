@@ -324,6 +324,17 @@ class S3Backend(StorageBackend):
         """
         self._require_connected()
         key = self._full_key(remote_path)
+        # Pre-check existence so that a missing/forbidden key surfaces as a
+        # clear ClientError rather than the misleading FileNotFoundError that
+        # s3transfer raises from its internal rename step when the download
+        # itself fails before writing any bytes to the temp file.
+        try:
+            self._client.head_object(Bucket=self._bucket, Key=key)
+        except botocore.exceptions.ClientError as e:
+            code = e.response["Error"]["Code"]
+            if code in ("404", "NoSuchKey"):
+                raise FileNotFoundError(f"Object not found: s3://{self._bucket}/{key}") from e
+            raise
         Path(local_path).parent.mkdir(parents=True, exist_ok=True)
         try:
             self._client.download_file(self._bucket, key, local_path)
