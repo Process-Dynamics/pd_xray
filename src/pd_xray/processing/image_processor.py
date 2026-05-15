@@ -514,7 +514,10 @@ class ImageProcessor:
         Returns:
             Blurred float32 array (same number of dimensions as input).
         """
-        return gaussian_filter(image.astype(np.float32, copy=False), sigma=sigma)
+        img = image.astype(np.float32, copy=False)
+        if img.ndim == 3:
+            return np.stack([gaussian_filter(s, sigma=sigma) for s in img])
+        return gaussian_filter(img, sigma=sigma)
 
     def _median_filter(self, image: NDArray, size: int) -> NDArray:
         """Apply median filtering for impulse-noise removal.
@@ -526,7 +529,10 @@ class ImageProcessor:
         Returns:
             Filtered float32 array.
         """
-        return median_filter(image.astype(np.float32, copy=False), size=size)
+        img = image.astype(np.float32, copy=False)
+        if img.ndim == 3:
+            return np.stack([median_filter(s, size=size) for s in img])
+        return median_filter(img, size=size)
 
     def _bilateral_filter(
         self, image: NDArray, sigma_spatial: float, sigma_color: float

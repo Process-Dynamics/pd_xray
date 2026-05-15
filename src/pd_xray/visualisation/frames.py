@@ -51,32 +51,47 @@ def _is_jupyter() -> bool:
         return False
 
 
-def _view_frames_jupyter(arr: NDArray, title: str, cmap: str) -> None:
-    """Render a frame slider as an HTML/JS widget — works with the default inline backend."""
+_MAX_DISPLAY_PX = 600
+
+
+def _encode_frame(frame: NDArray, cmap: str) -> str:
+    """Encode a 2D array as a base64 PNG using PIL. Much faster than matplotlib for large images."""
     import base64
     import io
 
-    import matplotlib.pyplot as plt
+    from PIL import Image
+
+    f = np.asarray(frame, dtype=np.float32)
+    vmin, vmax = float(f.min()), float(f.max())
+    span = vmax - vmin
+    normed = (f - vmin) / span if span > 0 else np.zeros_like(f)
+
+    if cmap == "gray":
+        img = Image.fromarray((normed * 255).astype(np.uint8), mode="L")
+    else:
+        from matplotlib import colormaps
+        rgba = colormaps[cmap](normed, bytes=True)
+        img = Image.fromarray(rgba[:, :, :3], mode="RGB")
+
+    h, w = normed.shape
+    if h > _MAX_DISPLAY_PX:
+        img = img.resize((int(w * _MAX_DISPLAY_PX / h), _MAX_DISPLAY_PX), Image.LANCZOS)
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG", compress_level=1)
+    buf.seek(0)
+    return base64.b64encode(buf.read()).decode()
+
+
+def _view_frames_jupyter(arr: NDArray, title: str, cmap: str) -> None:
+    """Render a frame slider as an HTML/JS widget — works with the default inline backend."""
     from IPython.display import HTML, display
 
     n_frames, h, w = arr.shape
-    fig_h = 6.0
-    fig_w = max(4.0, fig_h * (w / h))
+    disp_h = min(h, _MAX_DISPLAY_PX)
+    disp_w = int(w * disp_h / h)
 
-    frames_b64: list[str] = []
-    for i in range(n_frames):
-        fig, ax = plt.subplots(figsize=(fig_w, fig_h))
-        vmin, vmax = float(arr[i].min()), float(arr[i].max())
-        ax.imshow(arr[i], cmap=cmap, aspect="equal", interpolation="nearest",
-                  vmin=vmin, vmax=vmax)
-        ax.set_title(f"frame {i} / {n_frames - 1}", fontsize=10)
-        ax.axis("off")
-        plt.tight_layout(pad=0.3)
-        buf = io.BytesIO()
-        fig.savefig(buf, format="png", dpi=80, bbox_inches="tight")
-        plt.close(fig)
-        buf.seek(0)
-        frames_b64.append(base64.b64encode(buf.read()).decode())
+    frames_b64 = [_encode_frame(arr[i], cmap) for i in range(n_frames)]
 
     uid = f"fv{abs(id(arr)):x}"
     frames_json = "[" + ",".join(f'"{f}"' for f in frames_b64) + "]"
@@ -87,10 +102,10 @@ def _view_frames_jupyter(arr: NDArray, title: str, cmap: str) -> None:
   <br>
   <img id="{uid}i"
        src="data:image/png;base64,{frames_b64[0]}"
-       style="max-width:700px;display:block;margin-top:6px">
+       style="width:{disp_w}px;display:block;margin-top:6px">
   <div style="margin-top:8px;display:flex;align-items:center;gap:12px">
     <input id="{uid}s" type="range" min="0" max="{n_frames - 1}" value="0"
-           style="width:500px"
+           style="width:{min(disp_w, 500)}px"
            oninput="var v=parseInt(this.value);
                     document.getElementById('{uid}i').src='data:image/png;base64,'+{uid}f[v];
                     document.getElementById('{uid}l').textContent='Frame '+v+' / {n_frames - 1}';">

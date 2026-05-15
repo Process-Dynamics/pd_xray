@@ -84,15 +84,28 @@ class LazyHDF5Array:
         return len(self._shape)
 
     def __getitem__(self, key: Any) -> NDArray:
-        if self._path is not None:
+        if self._dataset_ref is not None:
+            data = self._dataset_ref[key]
+        else:
             with h5py.File(str(self._path), "r") as f:
                 data = f[self._dataset_path][key]
-        else:
-            data = self._dataset_ref[key]
         return np.asarray(data, dtype=self._dtype)
 
     def __len__(self) -> int:
         return self._shape[0]
+
+    def __enter__(self) -> "LazyHDF5Array":
+        if self._path is not None and self._dataset_ref is None:
+            self._hf_ctx: Any = h5py.File(str(self._path), "r")
+            self._dataset_ref = self._hf_ctx[self._dataset_path]
+        return self
+
+    def __exit__(self, *_: Any) -> None:
+        hf = getattr(self, "_hf_ctx", None)
+        if hf is not None:
+            hf.close()
+            self._hf_ctx = None
+            self._dataset_ref = None
 
     def __repr__(self) -> str:
         source = self._path.name if self._path is not None else "<remote>"
