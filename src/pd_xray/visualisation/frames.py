@@ -90,14 +90,23 @@ def _view_frames_jupyter(arr: NDArray, title: str, cmap: str) -> None:
        style="max-width:700px;display:block;margin-top:6px">
   <div style="margin-top:8px;display:flex;align-items:center;gap:12px">
     <input id="{uid}s" type="range" min="0" max="{n_frames - 1}" value="0"
-           style="width:500px"
-           oninput="var v=parseInt(this.value);
-                    document.getElementById('{uid}i').src='data:image/png;base64,'+{uid}f[v];
-                    document.getElementById('{uid}l').textContent='Frame '+v+' / {n_frames - 1}';">
+           style="width:500px">
     <span id="{uid}l">Frame 0 / {n_frames - 1}</span>
   </div>
 </div>
-<script>var {uid}f = {frames_json};</script>
+<script>
+(function() {{
+  var frames = {frames_json};
+  var img    = document.getElementById('{uid}i');
+  var slider = document.getElementById('{uid}s');
+  var label  = document.getElementById('{uid}l');
+  slider.addEventListener('input', function() {{
+    var v  = parseInt(this.value);
+    img.src = 'data:image/png;base64,' + frames[v];
+    label.textContent = 'Frame ' + v + ' / {n_frames - 1}';
+  }});
+}})();
+</script>
 """
     display(HTML(html))
 
@@ -108,7 +117,8 @@ def _view_frames_matplotlib(arr: NDArray, title: str, cmap: str) -> None:
     from matplotlib.widgets import Slider
 
     n_frames = arr.shape[0]
-    fig, ax = plt.subplots(figsize=(8, 7))
+    with plt.rc_context({"toolbar": "None"}):
+        fig, ax = plt.subplots(figsize=(8, 7))
     fig.canvas.manager.set_window_title(title)
     plt.subplots_adjust(bottom=0.12)
 
@@ -174,6 +184,68 @@ def view_frames(arr: NDArray, title: str = "Frame viewer", cmap: str = "gray") -
         _view_frames_jupyter(arr, title=title, cmap=cmap)
     else:
         _view_frames_matplotlib(arr, title=title, cmap=cmap)
+
+
+def view_histogram(
+    arr: NDArray,
+    title: str = "Intensity histogram",
+    bins: int = 256,
+    percentile_markers: tuple[float, ...] = (1.0, 50.0, 99.0),
+    log_scale: bool = False,
+) -> None:
+    """Display the pixel intensity histogram of a 2D or 3D array.
+
+    Flattens the array (ignoring NaN) and plots a histogram with optional
+    percentile markers and descriptive statistics.
+
+    Args:
+        arr                : 2D ``(H, W)`` or 3D ``(Z, H, W)`` NumPy array.
+        title              : Figure title.
+        bins               : Number of histogram bins. Default 256.
+        percentile_markers : Percentiles to mark with vertical lines.
+                             Default ``(1.0, 50.0, 99.0)``.
+        log_scale          : If True, use a log scale on the y-axis.
+
+    Usage::
+
+        view_histogram(frame)
+        view_histogram(frame, bins=512, log_scale=True, percentile_markers=(2, 98))
+    """
+    import matplotlib.pyplot as plt
+
+    arr = np.asarray(arr)
+    pixels = arr.flatten()
+    valid = pixels[~np.isnan(pixels)] if np.issubdtype(arr.dtype, np.floating) else pixels
+
+    fig, ax = plt.subplots(figsize=(8, 4))
+    ax.hist(valid, bins=bins, color="steelblue", linewidth=0)
+    if log_scale:
+        ax.set_yscale("log")
+
+    if percentile_markers:
+        colors = plt.cm.autumn(np.linspace(0.0, 1.0, len(percentile_markers)))
+        for pct, color in zip(percentile_markers, colors):
+            val = float(np.percentile(valid, pct))
+            ax.axvline(val, color=color, linewidth=1.2, linestyle="--",
+                       label=f"p{pct:g} = {val:.4g}")
+        ax.legend(fontsize=8, loc="upper right")
+
+    stats = (
+        f"min={valid.min():.4g}  max={valid.max():.4g}  "
+        f"mean={valid.mean():.4g}  std={valid.std():.4g}  n={valid.size:,}"
+    )
+    ax.set_title(title)
+    ax.set_xlabel(f"Intensity\n[{stats}]", fontsize=9)
+    ax.set_ylabel("Count (log)" if log_scale else "Count")
+    plt.tight_layout()
+
+    if _is_jupyter():
+        from IPython.display import display
+        display(fig)
+        plt.close(fig)
+    else:
+        fig.canvas.manager.set_window_title(title)
+        plt.show()
 
 
 def apply_and_view(

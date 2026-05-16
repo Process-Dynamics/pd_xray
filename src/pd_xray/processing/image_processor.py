@@ -169,6 +169,7 @@ class ImageProcessor:
         "flat_dark_field_correction"  : "_flat_dark_field_correction",
         "log_transform"           : "_log_transform",
         "local_contrast_enhancement" : "_local_contrast_enhancement",
+        "flip"                    : "_flip",
     }
 
     def __init__(self, steps: list[dict] | None = None) -> None:
@@ -385,18 +386,62 @@ class ImageProcessor:
     
     def rescale_intensity(
         self,
-        p1: float | None = None,
-        p99: float | None = None,
+        vmin: float | None = None,
+        vmax: float | None = None,
+        percentile: tuple[float, float] | None = None,
         dtype: DTypeLike | None = None,
     ) -> "ImageProcessor":
-        """Rescale intensities to a specified range. Applied per Z-slice on 3D arrays."""
+        """Clip intensities to a window and normalise to [0, 1].
+
+        Two mutually exclusive modes:
+
+        **Absolute mode** (default) — ``vmin``/``vmax`` are raw pixel values,
+        e.g. ``0``–``65535`` for a 16-bit image. Omitting either defaults to
+        the array minimum/maximum.
+
+            proc = ImageProcessor().rescale_intensity(vmin=0, vmax=65535)
+            proc = ImageProcessor().rescale_intensity()          # min–max stretch
+
+        **Percentile mode** — pass ``percentile=(lower_pct, upper_pct)``. The
+        corresponding pixel values are computed at runtime per Z-slice (for 3D)
+        and printed so the effective clipping window is visible.
+
+            proc = ImageProcessor().rescale_intensity(percentile=(2, 98))
+
+        Args:
+            vmin:       Lower clip bound (absolute pixel value). Defaults to array min.
+            vmax:       Upper clip bound (absolute pixel value). Defaults to array max.
+            percentile: ``(lower_pct, upper_pct)`` pair. Mutually exclusive with vmin/vmax.
+            dtype:      Output dtype (default float32).
+        """
+        if percentile is not None and (vmin is not None or vmax is not None):
+            raise ValueError(
+                "rescale_intensity: supply either 'percentile' or 'vmin'/'vmax', not both."
+            )
         return self._add_step(
-            "rescale_intensity", dtype, p1=p1, p99=p99
+            "rescale_intensity", dtype, vmin=vmin, vmax=vmax, percentile=percentile,
         )
 
     def rotate(self, angle_deg: float, dtype: DTypeLike | None = None) -> "ImageProcessor":
         """Rotate about the image centre (CCW). Applied per Z-slice on 3D arrays."""
         return self._add_step("rotate", dtype, angle_deg=angle_deg)
+
+    def flip(
+        self,
+        horizontal: bool = False,
+        vertical: bool = False,
+        dtype: DTypeLike | None = None,
+    ) -> "ImageProcessor":
+        """Flip the image horizontally, vertically, or both.
+
+        Args:
+            horizontal: Mirror left-right (along the vertical axis).
+            vertical:   Mirror top-bottom (along the horizontal axis).
+            dtype:      Optional output dtype.
+        """
+        if not horizontal and not vertical:
+            raise ValueError("flip: at least one of 'horizontal' or 'vertical' must be True.")
+        return self._add_step("flip", dtype, horizontal=horizontal, vertical=vertical)
 
     def crop(
         self,
@@ -785,40 +830,85 @@ class ImageProcessor:
     def _rescale_intensity(
         self,
         image: NDArray[T],
-        p1: float = 2.0,
-        p99: float = 98.0,
+        vmin: float | None = None,
+        vmax: float | None = None,
+        percentile: tuple[float, float] | None = None,
         dtype: DTypeLike = np.float32,
     ) -> NDArray[T]:
-        """Rescale intensities to the range defined by the p1 and p99 percentiles.
+        """Clip intensities to a window and normalise to [0, 1].
 
-        This is a common contrast enhancement technique that stretches the intensity
-        histogram to use the full dynamic range while being robust to outliers.
+        Absolute mode: clip to [vmin, vmax] (defaults to array min/max).
+        Percentile mode: compute bounds per Z-slice from the data and print them.
 
         Args:
-            image : Input 2D or 3D array.
-            p1    : Lower percentile (default 2.0).
-            p99   : Upper percentile (default 98.0).
-            dtype : Output dtype (default float32).
+            image      : Input 2D or 3D array.
+            vmin       : Lower absolute clip bound. Defaults to array minimum.
+            vmax       : Upper absolute clip bound. Defaults to array maximum.
+            percentile : (lower_pct, upper_pct) pair. Overrides vmin/vmax.
+            dtype      : Output dtype (default float32).
 
         Returns:
-            Rescaled array with specified dtype.
+            Normalised array in [0, 1] with specified dtype.
         """
         img = image.astype(np.float32, copy=False)
-        if p1 is None:
-            p1 = 0.0
-        if p99 is None:
-            p99 = 100.0
-        lower, upper = np.percentile(img, (p1, p99))
 
-        if upper - lower < 1e-8:
+        if percentile is not None:
+            p_low, p_high = percentile
+            if img.ndim == 3:
+                lowers = np.array([np.percentile(s, p_low)  for s in img], dtype=np.float32)
+                uppers = np.array([np.percentile(s, p_high) for s in img], dtype=np.float32)
+                print(
+                    f"rescale_intensity [percentile=({p_low}, {p_high}), {img.shape[0]} slices] "
+                    f"lower: [{lowers.min():.4g}, {lowers.max():.4g}]  "
+                    f"upper: [{uppers.min():.4g}, {uppers.max():.4g}]"
+                )
+                slices = []
+                for s, lo, hi in zip(img, lowers, uppers):
+                    span = float(hi - lo)
+                    if span < 1e-8:
+                        slices.append(np.zeros_like(s, dtype=dtype))
+                    else:
+                        slices.append(((np.clip(s, lo, hi) - lo) / span).astype(dtype, copy=False))
+                return np.stack(slices)
+            else:
+                lower = float(np.percentile(img, p_low))
+                upper = float(np.percentile(img, p_high))
+                print(f"rescale_intensity [percentile=({p_low}, {p_high})] lower={lower:.4g}  upper={upper:.4g}")
+        else:
+            lower = float(vmin) if vmin is not None else float(img.min())
+            upper = float(vmax) if vmax is not None else float(img.max())
+
+        span = upper - lower
+        if span < 1e-8:
             return np.zeros_like(img, dtype=dtype)
-
-        rescaled = np.clip(img, lower, upper)
-        return rescaled.astype(dtype, copy=False)
+        return ((np.clip(img, lower, upper) - lower) / span).astype(dtype, copy=False)
 
     # ------------------------------------------------------------------
     # Geometric transforms
     # ------------------------------------------------------------------
+
+    def _flip(
+        self, image: NDArray, horizontal: bool = False, vertical: bool = False
+    ) -> NDArray:
+        """Flip the image horizontally, vertically, or both.
+
+        For 3D arrays the flip is applied across all Z-slices simultaneously
+        (no per-slice loop needed since np.flip broadcasts over the Z axis).
+
+        Args:
+            image      : Input 2D or 3D array.
+            horizontal : If True, mirror left-right (flip along axis=-1 / columns).
+            vertical   : If True, mirror top-bottom (flip along axis=-2 / rows).
+
+        Returns:
+            Flipped array (same dtype as input, contiguous copy).
+        """
+        axes = []
+        if vertical:
+            axes.append(-2)
+        if horizontal:
+            axes.append(-1)
+        return np.flip(image, axis=axes).copy()
 
     def _rotate(self, image: NDArray, angle_deg: float) -> NDArray:
         """Rotate about the image centre (counter-clockwise).
@@ -859,11 +949,20 @@ class ImageProcessor:
             slice_end   : Last Z index (exclusive, 3D only).
 
         Returns:
-            Cropped array (same dtype as input).
+            Cropped float32 array.
         """
+        h, w = image.shape[-2], image.shape[-1]
+        if not (0 <= row_start < row_end <= h):
+            raise ValueError(
+                f"crop: row indices [{row_start}, {row_end}) are invalid for image height {h}."
+            )
+        if not (0 <= col_start < col_end <= w):
+            raise ValueError(
+                f"crop: col indices [{col_start}, {col_end}) are invalid for image width {w}."
+            )
         if image.ndim == 2:
-            return image[row_start:row_end, col_start:col_end]
-        return image[slice_start:slice_end, row_start:row_end, col_start:col_end]
+            return image[row_start:row_end, col_start:col_end].astype(np.float32, copy=False)
+        return image[slice_start:slice_end, row_start:row_end, col_start:col_end].astype(np.float32, copy=False)
 
     def _resize(
         self, image: NDArray, height: int, width: int, depth: int | None = None
