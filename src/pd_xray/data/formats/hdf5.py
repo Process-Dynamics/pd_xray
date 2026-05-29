@@ -82,6 +82,15 @@ class LazyHDF5Array:
     @property
     def ndim(self) -> int:
         return len(self._shape)
+    
+    def get_array(self) -> NDArray:
+        """Load the entire dataset into memory as a NumPy array."""
+        if self._dataset_ref is not None:
+            data = self._dataset_ref[()]
+        else:
+            with h5py.File(str(self._path), "r") as f:
+                data = f[self._dataset_path][()]
+        return np.asarray(data, dtype=self._dtype)
 
     def __getitem__(self, key: Any) -> NDArray:
         if self._dataset_ref is not None:
