@@ -258,3 +258,54 @@ def suggest_chunk_size(
     """
     # TODO
     raise NotImplementedError
+
+
+def resolve_device(requested: str = "auto") -> str:
+    """Resolve a compute-device string for model inference, built on detect_gpus().
+
+    "auto" -> "cuda:0" if a CUDA GPU is present, else "mps" (Apple), else "cpu".
+    "cpu"  -> "cpu".
+    "cuda"/"cuda:N" -> require CUDA GPU N (default 0); raise ValueError if unavailable.
+    "mps"  -> require Apple MPS; raise ValueError if unavailable.
+
+    Raises ValueError on an unavailable explicit request so a misconfigured run fails fast.
+    """
+    requested = (requested or "auto").strip().lower()
+    n_gpus = len(detect_gpus())
+
+    def _mps_available() -> bool:
+        try:
+            import torch
+            return torch.backends.mps.is_available()
+        except Exception:
+            return False
+
+    if requested == "cpu":
+        return "cpu"
+
+    if requested == "auto":
+        if n_gpus > 0:
+            return "cuda:0"
+        if _mps_available():
+            return "mps"
+        return "cpu"
+
+    if requested == "mps":
+        if _mps_available():
+            return "mps"
+        raise ValueError("MPS requested but not available on this machine.")
+
+    if requested == "cuda" or requested.startswith("cuda:"):
+        index = 0
+        if ":" in requested:
+            try:
+                index = int(requested.split(":", 1)[1])
+            except ValueError:
+                raise ValueError(f"Invalid CUDA device string: {requested!r}")
+        if n_gpus == 0:
+            raise ValueError("CUDA requested but no CUDA GPU detected.")
+        if index >= n_gpus:
+            raise ValueError(f"CUDA device {index} requested but only {n_gpus} GPU(s) detected.")
+        return f"cuda:{index}"
+
+    raise ValueError(f"Unrecognized device request: {requested!r}")
