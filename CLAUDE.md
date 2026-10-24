@@ -73,14 +73,17 @@ environment.yml, environment-dev.yml
 
 ## Style
 
-Python 3.12, type hints, ruff + mypy clean, 120-char lines. British spelling (`normalise`, `colour`). Google-style
+Code must run on Python 3.10–3.12 (`requires-python = ">=3.10"`; ruff `target-version` and mypy `python_version`
+set to 3.10). No 3.11+ features: `typing.Self`, `StrEnum`, `tomllib`, `except*`, PEP 695 generics. Type hints, ruff +
+mypy clean, 120-char lines. British spelling (`normalise`, `colour`). Google-style
 docstrings stating array axes and dtype.
 
 ## Environment
 
 - Conda env, packages installed with pip into it. No `uv`.
-- `numpy<2` is required: the Jetson Orin AGX (linux-aarch64) is limited to NumPy 1.x. Every dependency must support
-  NumPy 1.26 and linux-aarch64.
+- NumPy matches the Jetson Orin AGX (linux-aarch64): `environment*.yml` pin `numpy==1.26.4`, package `pyproject.toml`
+  files use `numpy>=1.26.4,<2` (so importing projects aren't forced to one exact version). Every dependency must support NumPy
+  1.26.4, Python 3.10 and linux-aarch64. The Jetson uses system Python 3.10.12, and dev envs use 3.12.
 
 ```bash
 conda env create -f environment-dev.yml && conda activate pd-xray-dev

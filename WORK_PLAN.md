@@ -91,7 +91,6 @@ Tomography and 3D views, Zarr/remote-friendly layout, segmentation/dendrite anal
 
 | # | Decision | Step | Leaning |
 |---|----------|------|---------|
-| D1 | Python version on the Jetson | 0.1 | 3.12 via miniforge, if possible |
 | D2 | Pipeline file format | 1.4 | YAML |
 | D3 | First ops list | 1.4 | User confirms the list in 1.4 |
 | D4 | Progress transport | 1.5 | WebSocket |
@@ -113,5 +112,7 @@ Tomography and 3D views, Zarr/remote-friendly layout, segmentation/dendrite anal
 - 2026-10-23: Hosted on the internal network, ≤ 5 users, Docker, GPU. Auth deferred.
 - 2026-10-23: GPU is optional. CPU is the reference.
 - 2026-10-23: British spelling, 120-char lines, ruff + mypy, focused tests.
-- 2026-10-24: `numpy<2` (Jetson Orin AGX). Dependencies must support NumPy 1.26 and aarch64.
+- 2026-10-24: `numpy==1.26.4` to match the Jetson Orin AGX. Dependencies must support it and aarch64. Python ≤ 3.12.
+- 2026-10-24: D1: Jetson uses system Python 3.10.12, so code supports 3.10–3.12. Dev envs use 3.12, and ruff/mypy target
+  3.10.
 - 2026-10-24: Short, direct markdown. Simple code that reuses existing libraries.
