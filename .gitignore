@@ -210,3 +210,20 @@ __marimo__/
 node_modules/
 frontend/dist/
 # The built UI (packages/pd-xray-server/src/pd_xray/server/static/) is committed, so users need no Node.
+
+# Data and results: never commit (large, and may hold unpublished experiment data)
+data/
+output/
+notebooks/experiments/
+notebooks/visualisations/
+*.npy
+*.npz
+*.joblib
+*.pkl
+*.vti
+*.h5
+*.hdf5
+*.nxs
+*.edf
+*.tif
+*.tiff

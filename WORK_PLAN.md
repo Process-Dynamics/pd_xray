@@ -260,3 +260,6 @@ Tomography and 3D views, Zarr/remote-friendly layout, segmentation/dendrite anal
 - 2026-10-25: Built UI (`pd-xray-server/.../static/`) is committed (no longer ignored), so users need no Node; rebuild
   and commit it after frontend changes. README is short (quick start, web app); details in `docs/` (installation,
   web app, io, processing, storage, core, development). Verified from a clean copy with a new conda env.
+- 2026-10-25: History scan: no credentials ever committed; one old notebook version (commit 99a1f5b, on main) shows a
+  real S3 endpoint/bucket/prefix and a file list (repo is public); user decides on purging. Added data ignore rules
+  and nbstripout 0.9.1 (dev env; `.gitattributes`, required filter, install once per clone).

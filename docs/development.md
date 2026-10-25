@@ -7,7 +7,20 @@ Plan and decisions: [`WORK_PLAN.md`](../WORK_PLAN.md). Rules for code and AI ass
 ```bash
 conda env create -f environment-dev.yml      # editable installs, tools (ruff, mypy, pytest), Node 24, moto
 conda activate pd-xray-dev
+nbstripout --install --attributes .gitattributes   # once per clone: see "Notebooks and data" below
 ```
+
+## Notebooks and data
+
+- **Notebook outputs are never committed.** `.gitattributes` sends every `.ipynb` through nbstripout, which removes
+  outputs and execution counts when git stores the file (your local copy keeps them). Outputs can contain bucket
+  names, file listings, paths and images. The git filter itself lives in `.git/config`, so run
+  `nbstripout --install --attributes .gitattributes` once in every new clone; `nbstripout --status` checks it.
+  **Without it, notebooks are committed with their outputs** (git silently skips a filter it doesn't know).
+- **Data never goes into git**: `data/`, `output/`, `notebooks/experiments/`, `notebooks/visualisations/` and data
+  files (`*.h5`, `*.tif`, `*.npy`, `*.joblib`, `*.vti`, …) are ignored. Tests make small synthetic data at run time.
+  Use `git add -f` only for a deliberate, small exception.
+- Never put credentials in notebooks or code: use `getpass`, SSH keys or AWS profiles (see [storage](storage.md)).
 
 ## Checks (all must pass before committing)
 
