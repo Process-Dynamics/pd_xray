@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 
 import type { Job } from "./api";
-import { formatDuration } from "./format";
+import { formatBytes, formatDuration } from "./format";
 
 interface Props {
   connected: boolean;
@@ -43,14 +43,13 @@ export function StatusBar({ connected, busy, jobs, error, onCancel, onDismissErr
       </span>
       <span className="status-jobs">
         {jobs.map((job) => (
-          <span key={job.id} className={`job job-${job.state}`} title={job.error ?? job.message}>
+          <span key={job.id} className={`job job-${job.state}`} title={job.error ?? jobSummary(job) ?? job.message}>
             <span className="job-title">{job.title}</span>
             {job.state === "running" && (
               <>
                 <progress max={1} value={job.fraction ?? undefined} />
                 <span>
-                  {job.total ? `${job.current}/${job.total}` : job.current}{" "}
-                  {job.eta_seconds !== null && `· ${formatDuration(job.eta_seconds)} left`}
+                  {jobProgress(job)} {job.eta_seconds !== null && `· ${formatDuration(job.eta_seconds)} left`}
                 </span>
               </>
             )}
@@ -73,4 +72,18 @@ export function StatusBar({ connected, busy, jobs, error, onCancel, onDismissErr
       )}
     </div>
   );
+}
+
+/** "3/10", or for byte jobs "1.2 GB/3.4 GB · 110 MB/s". */
+function jobProgress(job: Job): string {
+  if (job.unit !== "bytes") return job.total ? `${job.current}/${job.total}` : String(job.current);
+  const done = job.total ? `${formatBytes(job.current)}/${formatBytes(job.total)}` : formatBytes(job.current);
+  return job.rate ? `${done} · ${formatBytes(job.rate)}/s` : done;
+}
+
+/** What a finished download did, e.g. "Copied 12 files, skipped 3 identical, into /data/scan". */
+function jobSummary(job: Job): string | null {
+  const r = job.result as { copied?: number; skipped?: number; destination?: string } | null;
+  if (job.state !== "done" || !r || r.copied === undefined) return null;
+  return `Copied ${r.copied} files, skipped ${r.skipped ?? 0} identical, into ${r.destination ?? ""}`;
 }

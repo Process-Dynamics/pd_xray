@@ -8,6 +8,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import re
 import threading
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -25,11 +26,13 @@ from pd_xray.io import compute_value_range, supported_extensions
 from pd_xray.io.hdf5 import inspect_hdf5
 from pd_xray.processing import OPERATIONS, tone_map
 from pd_xray.server.colormaps import COLORMAPS
+from pd_xray.server.connections import BROWSER_COOKIE, ConnectionStore, list_remote, new_browser_id
 from pd_xray.server.datasets import DatasetStore, NotFoundError, jsonable
 from pd_xray.server.jobs import JobManager
 from pd_xray.server.paths import AccessDeniedError, list_directory, resolve_path
 from pd_xray.server.render import MEDIA_TYPES, ImageFormat, parse_tone
 from pd_xray.server.settings import Settings
+from pd_xray.storage import HostKeyError, LocalStorage, copy, normalise_path
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +58,25 @@ class PreviewRequest(BaseModel):
     client: str
 
 
+class ConnectionRequest(BaseModel):
+    """Body of POST /api/connections. `settings` (host, bucket, …) are returned by GET; `credentials` never are."""
+
+    kind: str
+    name: str = ""
+    settings: dict[str, Any]
+    credentials: dict[str, str]
+
+
+class DownloadRequest(BaseModel):
+    """Body of POST /api/jobs/download: copy `path` of a connection into the local `folder` (inside the roots)."""
+
+    connection: str
+    path: str
+    folder: str
+    overwrite: bool = False
+    verify: bool = False
+
+
 class ValueRangeRequest(BaseModel):
     """Body of POST /api/jobs/value-range."""
 
@@ -65,15 +87,31 @@ def create_app(settings: Settings) -> FastAPI:
     """Build the app. All state (open datasets, cache, jobs) lives in the returned app, not in globals."""
     store = DatasetStore(settings.cache_bytes, settings.tile_size, settings.roots)
     jobs = JobManager(settings.job_workers)
+    connections = ConnectionStore()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
         jobs.shutdown()
         store.close_all()
+        connections.close_all()
 
     app = FastAPI(title="pd_xray", lifespan=lifespan)
     app.state.settings, app.state.store, app.state.jobs = settings, store, jobs
+    app.state.connections = connections
+
+    @app.middleware("http")
+    async def browser_id(request: Request, call_next: Any) -> Response:
+        """Gives each browser a random id cookie, which keeps its connections apart from other browsers'."""
+        browser = request.cookies.get(BROWSER_COOKIE)
+        new = not browser
+        request.state.browser = new_browser_id() if new else browser
+        response: Response = await call_next(request)
+        if new:
+            response.set_cookie(
+                BROWSER_COOKIE, request.state.browser, max_age=365 * 86400, httponly=True, samesite="strict"
+            )
+        return response
 
     def error(status: int) -> Any:
         async def handler(request: Request, exc: Exception) -> JSONResponse:
@@ -82,6 +120,14 @@ def create_app(settings: Settings) -> FastAPI:
         return handler
 
     app.add_exception_handler(PdXrayError, error(400))
+    app.add_exception_handler(PermissionError, error(403))
+    app.add_exception_handler(IsADirectoryError, error(400))
+
+    @app.exception_handler(HostKeyError)
+    async def host_key_error(request: Request, exc: HostKeyError) -> JSONResponse:
+        detail = {"detail": str(exc), "error": "HostKeyError", "fingerprint": exc.fingerprint}
+        return JSONResponse(detail, status_code=400)
+
     app.add_exception_handler(AccessDeniedError, error(403))
     app.add_exception_handler(NotFoundError, error(404))
     app.add_exception_handler(FileNotFoundError, error(404))
@@ -108,6 +154,29 @@ def create_app(settings: Settings) -> FastAPI:
             entries = [{"name": str(root), "path": str(root), "kind": "dir", "size": None} for root in settings.roots]
             return {"path": None, "parent": None, "entries": entries}
         return list_directory(resolve_path(path, settings.roots), settings.roots, show_hidden)
+
+    @app.get("/api/connections")
+    def list_connections(request: Request) -> list[dict[str, Any]]:
+        """This browser's remote connections."""
+        return [c.info() for c in connections.list(request.state.browser)]
+
+    @app.post("/api/connections")
+    def add_connection(request: Request, body: ConnectionRequest) -> dict[str, Any]:
+        """Test and open a connection (`kind` "sftp" or "s3"). Fails with the reason; an unknown SSH host key gives
+        error "HostKeyError" with its `fingerprint`, to be sent back as settings.host_key once the user trusts it."""
+        connection = connections.add(request.state.browser, body.kind, body.name, body.settings, body.credentials)
+        logger.info("Browser connected to %s", connection.storage.url)
+        return connection.info()
+
+    @app.delete("/api/connections/{connection_id}", status_code=204)
+    def remove_connection(request: Request, connection_id: str) -> None:
+        connections.remove(request.state.browser, connection_id)
+
+    @app.get("/api/connections/{connection_id}/files")
+    def remote_files(request: Request, connection_id: str, path: str = "", show_hidden: bool = False) -> dict[str, Any]:
+        """Folder listing on a connection. `path` is relative to the connection's root ("" for the root)."""
+        connection = connections.get(request.state.browser, connection_id)
+        return list_remote(connection, normalise_path(path), show_hidden)
 
     @app.get("/api/inspect")
     def inspect(path: str) -> dict[str, Any]:
@@ -273,6 +342,33 @@ def create_app(settings: Settings) -> FastAPI:
             return {"min": low, "max": high}
 
         return jobs.submit(f"Value range of {entry.path.name}", work)
+
+    @app.post("/api/jobs/download")
+    def download_job(request: Request, body: DownloadRequest) -> dict[str, Any]:
+        """Job: copy a remote file or folder into a local folder (see `pd_xray.storage.copy`). Identical files are
+        skipped and interrupted downloads resume; differing files fail the job unless `overwrite`."""
+        connection = connections.get(request.state.browser, body.connection)
+        source = normalise_path(body.path)
+        folder = resolve_path(body.folder, settings.roots)
+        if not folder.is_dir():
+            raise NotADirectoryError(f"Not a folder: {folder}")
+        name = source.rsplit("/", 1)[-1] or re.sub(r"[^\w.-]+", "_", connection.name).strip("_")  # root: its name
+        destination = LocalStorage(folder)
+
+        def work(progress: ProgressCallback, cancel: CancelToken) -> dict[str, Any]:
+            result = copy(
+                connection.storage,
+                source,
+                destination,
+                name,
+                overwrite=body.overwrite,
+                verify=body.verify,
+                progress=progress,
+                cancel=cancel,
+            )
+            return {**vars(result), "destination": str(folder / name)}
+
+        return jobs.submit(f"Download {name}", work, unit="bytes")
 
     @app.websocket("/api/events")
     async def events(websocket: WebSocket) -> None:

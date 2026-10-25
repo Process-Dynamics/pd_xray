@@ -1,7 +1,9 @@
 # pd-xray-core
 
-Shared types, errors and progress/cancellation protocol for pd_xray.
+Shared axis names, progress/cancel protocol and errors for pd_xray. Needs only NumPy.
 
 ```python
-import pd_xray.core
+from pd_xray.core import CancelToken, Progress, validate_axes
 ```
+
+Guide: [docs/core.md](../../docs/core.md).

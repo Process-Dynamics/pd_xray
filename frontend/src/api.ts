@@ -23,10 +23,25 @@ export interface SequenceGroup {
 }
 
 export interface Listing {
+  connection?: string; // set for a remote connection's folder; paths are then relative to its root ("" = root)
   path: string | null;
   parent: string | null;
   entries: FileEntry[];
   sequences?: SequenceGroup[];
+}
+
+export type ConnectionKind = "sftp" | "s3";
+
+/** Connection fields without secrets (sftp: host, port, username, root, host_key; s3: bucket, prefix, endpoint_url,
+ * region). */
+export type ConnectionSettings = Record<string, string | number>;
+
+export interface Connection {
+  id: string;
+  kind: ConnectionKind;
+  name: string;
+  url: string;
+  settings: ConnectionSettings;
 }
 
 export interface Hdf5Dataset {
@@ -75,12 +90,14 @@ export type JobState = "queued" | "running" | "done" | "failed" | "cancelled";
 export interface Job {
   id: string;
   title: string;
+  unit: string; // what current/total count: "bytes", or "" for items such as frames
   state: JobState;
   current: number;
   total: number | null;
   fraction: number | null;
   message: string;
   eta_seconds: number | null;
+  rate: number | null; // units per second while running
   result: unknown;
   error: string | null;
 }
@@ -163,6 +180,7 @@ export class ApiError extends Error {
   constructor(
     message: string,
     readonly status: number | null = null, // HTTP status, or null if the server couldn't be reached
+    readonly body: Record<string, unknown> | null = null, // the server's JSON error, e.g. {error, fingerprint}
   ) {
     super(message);
   }
@@ -183,15 +201,17 @@ async function request<T>(method: string, url: string, body?: unknown, signal?: 
   }
   if (!response.ok) {
     let detail = `${response.status} ${response.statusText}`;
+    let data: Record<string, unknown> | null = null;
     try {
-      const data: unknown = await response.json();
-      if (data && typeof data === "object" && "detail" in data) {
+      const json: unknown = await response.json();
+      if (json && typeof json === "object") data = json as Record<string, unknown>;
+      if (data && "detail" in data) {
         detail = typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail);
       }
     } catch {
       // not JSON: keep the status text
     }
-    throw new ApiError(detail, response.status);
+    throw new ApiError(detail, response.status, data);
   }
   return response.status === 204 ? (undefined as T) : ((await response.json()) as T);
 }
@@ -203,6 +223,11 @@ export const api = {
   info: () => request<ServerInfo>("GET", "/api/info"),
   list: (path: string | null) =>
     request<Listing>("GET", path === null ? "/api/files" : `/api/files?${query({ path })}`),
+  connections: () => request<Connection[]>("GET", "/api/connections"),
+  connect: (kind: ConnectionKind, name: string, settings: ConnectionSettings, credentials: Record<string, string>) =>
+    request<Connection>("POST", "/api/connections", { kind, name, settings, credentials }),
+  disconnect: (id: string) => request<void>("DELETE", `/api/connections/${id}`),
+  listRemote: (id: string, path: string) => request<Listing>("GET", `/api/connections/${id}/files?${query({ path })}`),
   inspect: (path: string) => request<Inspection>("GET", `/api/inspect?${query({ path })}`),
   open: (path: string, options: { dataset?: string; pattern?: string } = {}) =>
     request<DatasetInfo>("POST", "/api/datasets", { path, ...options }),
@@ -238,6 +263,8 @@ export const api = {
   preview: (id: string, frame: number[], steps: Step[], client: string, signal?: AbortSignal) =>
     request<Preview>("POST", `/api/datasets/${id}/frames/${frameKey(frame)}/preview`, { steps, client }, signal),
   valueRange: (datasetId: string) => request<Job>("POST", "/api/jobs/value-range", { dataset_id: datasetId }),
+  download: (connection: string, path: string, folder: string, overwrite: boolean, verify: boolean) =>
+    request<Job>("POST", "/api/jobs/download", { connection, path, folder, overwrite, verify }),
   cancelJob: (id: string) => request<Job>("POST", `/api/jobs/${id}/cancel`),
 };
 

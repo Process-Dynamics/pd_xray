@@ -268,3 +268,94 @@ def test_histogram_and_display_tone_match_the_tone_step(client: TestClient, root
     curves = client.get("/api/tone-curve", params={"tone": json.dumps({"exposure": 1}), "points": 5}).json()
     np.testing.assert_allclose(curves["curve"], [0, 0.25, 0.5, 0.75, 1])  # the curve alone is the identity
     np.testing.assert_allclose(curves["response"], [0, 0.5, 1, 1, 1])
+
+
+def test_connections_per_browser(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    moto = pytest.importorskip("moto")
+    import boto3
+
+    from pd_xray.server import connections as connections_module
+    from pd_xray.storage import HostKeyError
+
+    app = create_app(Settings(roots=(root,)))
+    s3 = {"bucket": "lab", "region": "us-east-1", "endpoint_url": ""}
+    keys = {"access_key": "testing", "secret_key": "testing"}
+    with moto.mock_aws(), TestClient(app) as browser, TestClient(app) as other:
+        client = boto3.client("s3", region_name="us-east-1", aws_access_key_id="x", aws_secret_access_key="x")
+        client.create_bucket(Bucket="lab")
+        client.put_object(Bucket="lab", Key="scans/b10.tif", Body=b"12")
+        client.put_object(Bucket="lab", Key="scans/b9.tif", Body=b"1")
+        client.put_object(Bucket="lab", Key="scans/sub/x", Body=b"")
+
+        added = browser.post("/api/connections", json={"kind": "s3", "settings": s3, "credentials": keys}).json()
+        assert added["url"] == added["name"] == "s3://lab/" and "credentials" not in added
+        assert added["settings"] == {"bucket": "lab", "region": "us-east-1"}  # empty fields dropped
+        listing = browser.get(f"/api/connections/{added['id']}/files", params={"path": "/scans/"}).json()
+        assert [(e["name"], e["kind"], e["size"]) for e in listing["entries"]] == [
+            ("sub", "dir", None),
+            ("b9.tif", "file", 1),
+            ("b10.tif", "file", 2),
+        ]
+        assert (listing["path"], listing["parent"], listing["connection"]) == ("scans", "", added["id"])
+
+        assert [c["id"] for c in browser.get("/api/connections").json()] == [added["id"]]
+        assert other.get("/api/connections").json() == []  # another browser sees nothing
+        assert other.get(f"/api/connections/{added['id']}/files").status_code == 404
+        missing = browser.get(f"/api/connections/{added['id']}/files", params={"path": "nope"})
+        assert missing.status_code == 404
+        browser.delete(f"/api/connections/{added['id']}")
+        assert browser.get("/api/connections").json() == []
+
+        bad = browser.post("/api/connections", json={"kind": "s3", "settings": s3, "credentials": {}})
+        assert bad.status_code == 400 and "access key" in bad.json()["detail"]
+        bad = browser.post("/api/connections", json={"kind": "s3", "settings": {"x": 1}, "credentials": keys})
+        assert bad.status_code == 400 and "Unknown s3 fields: x" in bad.json()["detail"]
+        bad = browser.post("/api/connections", json={"kind": "sftp", "settings": {"host": "h"}, "credentials": {}})
+        assert bad.status_code == 400 and "password or a private key" in bad.json()["detail"]
+
+        def untrusted(*args: Any) -> None:
+            raise HostKeyError("Unknown host key", "SHA256:abc")
+
+        monkeypatch.setattr(connections_module, "open_storage", untrusted)
+        sftp = {"host": "nas", "username": "me"}
+        response = browser.post(
+            "/api/connections", json={"kind": "sftp", "settings": sftp, "credentials": {"password": "p"}}
+        )
+        assert response.status_code == 400 and response.json()["fingerprint"] == "SHA256:abc"
+
+
+def test_download_job(root: Path) -> None:
+    moto = pytest.importorskip("moto")
+    import boto3
+
+    keys = {"access_key": "testing", "secret_key": "testing"}
+    with moto.mock_aws(), TestClient(create_app(Settings(roots=(root,)))) as client:
+        s3 = boto3.client("s3", region_name="us-east-1", aws_access_key_id="x", aws_secret_access_key="x")
+        s3.create_bucket(Bucket="lab")
+        s3.put_object(Bucket="lab", Key="scans/a.bin", Body=b"a" * 1000)
+        s3.put_object(Bucket="lab", Key="scans/sub/b.bin", Body=b"b")
+        body = {"kind": "s3", "settings": {"bucket": "lab", "region": "us-east-1"}, "credentials": keys}
+        connection = client.post("/api/connections", json=body).json()["id"]
+
+        def download(**options: Any) -> dict[str, Any]:
+            job = client.post("/api/jobs/download", json={"connection": connection, "path": "scans", **options})
+            assert job.status_code == 200, job.json()
+            assert job.json()["unit"] == "bytes"
+            for _ in range(200):
+                snapshot = client.get(f"/api/jobs/{job.json()['id']}").json()
+                if snapshot["state"] in FINISHED:
+                    return snapshot  # type: ignore[no-any-return]
+                time.sleep(0.02)
+            raise AssertionError("job didn't finish")
+
+        done = download(folder=str(root / "sub"))
+        assert done["state"] == "done" and done["result"]["copied"] == 2 and done["result"]["checksummed"] == 2
+        assert (root / "sub" / "scans" / "a.bin").read_bytes() == b"a" * 1000
+        assert (root / "sub" / "scans" / "sub" / "b.bin").read_bytes() == b"b"
+        assert download(folder=str(root / "sub"))["result"]["skipped"] == 2
+        (root / "sub" / "scans" / "a.bin").write_bytes(b"x")
+        failed = download(folder=str(root / "sub"))
+        assert failed["state"] == "failed" and "overwrite" in failed["error"]
+        assert download(folder=str(root / "sub"), overwrite=True)["result"]["copied"] == 1
+        outside = client.post("/api/jobs/download", json={"connection": connection, "path": "scans", "folder": "/tmp"})
+        assert outside.status_code == 403

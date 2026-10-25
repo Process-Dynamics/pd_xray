@@ -15,6 +15,9 @@ dependencies:
   - fastapi-core=0.142.2
   - uvicorn=0.54.0
   - websockets=16.1.1
+  - asyncssh=2.24.0
+  - boto3=1.43.114
+  - moto=5.2.4
   - httpx=0.28.1
   - nodejs=24.21.0
   - pip
@@ -23,7 +26,7 @@ dependencies:
   - pytest=9.1.1
   - pip:
       - -e ./packages/pd-xray-core
-      - -e ./packages/pd-xray-storage
+      - -e ./packages/pd-xray-storage[all]
       - -e ./packages/pd-xray-io[all]
       - -e ./packages/pd-xray-processing
       - -e ./packages/pd-xray-server

@@ -1,8 +1,11 @@
-// Folder browser within the server's allowed roots. Opens files, file sequences and HDF5 datasets.
+// Folder browser within the server's allowed roots and this browser's remote connections (NAS, S3). Opens local
+// files, file sequences and HDF5 datasets.
 
 import { useCallback, useEffect, useState } from "react";
 
-import { api, type Hdf5Dataset, type Listing } from "./api";
+import { api, type Connection, type Hdf5Dataset, type Listing } from "./api";
+import { ConnectionDialog } from "./ConnectionDialog";
+import { DownloadDialog } from "./DownloadDialog";
 import { formatBytes } from "./format";
 
 export interface OpenRequest {
@@ -24,18 +27,47 @@ export function FileBrowser({ track, onOpen, openPath }: Props) {
   const [listing, setListing] = useState<Listing | null>(null);
   const [filter, setFilter] = useState("");
   const [picker, setPicker] = useState<{ path: string; datasets: Hdf5Dataset[] } | null>(null);
+  const [connections, setConnections] = useState<Connection[]>([]);
+  const [remote, setRemote] = useState<Connection | null>(null); // connection being browsed
+  const [adding, setAdding] = useState(false);
+  const [downloading, setDownloading] = useState<{ connection: Connection; path: string; name: string } | null>(null);
 
+  const show = useCallback((result: Listing | undefined, connection: Connection | null) => {
+    if (!result) return;
+    setListing(result);
+    setRemote(connection);
+    setFilter("");
+    setPicker(null);
+  }, []);
+
+  /** Local folder, or the top level (allowed folders and connections) for null. */
   const go = useCallback(
     async (path: string | null) => {
-      const result = await track("Listing folder", api.list(path));
-      if (result) {
-        setListing(result);
-        setFilter("");
-        setPicker(null);
-      }
+      if (path === null) void track("Listing connections", api.connections()).then((c) => c && setConnections(c));
+      show(await track("Listing folder", api.list(path)), null);
     },
-    [track],
+    [track, show],
   );
+
+  const goRemote = async (connection: Connection, path: string) =>
+    show(await track(`Listing ${connection.name}`, api.listRemote(connection.id, path)), connection);
+
+  const up = () => {
+    if (remote && listing?.parent != null) void goRemote(remote, listing.parent);
+    else void go(remote ? null : (listing?.parent ?? null));
+  };
+
+  const download = async (folder: string, overwrite: boolean, verify: boolean) => {
+    if (!downloading) return;
+    setDownloading(null);
+    const { connection, path, name } = downloading;
+    await track(`Starting download of ${name}`, api.download(connection.id, path, folder, overwrite, verify));
+  };
+
+  const disconnect = async (connection: Connection) => {
+    await track(`Disconnecting ${connection.name}`, api.disconnect(connection.id));
+    setConnections((list) => list.filter((c) => c.id !== connection.id));
+  };
 
   useEffect(() => {
     void go(null);
@@ -54,16 +86,28 @@ export function FileBrowser({ track, onOpen, openPath }: Props) {
   const entries = (listing?.entries ?? []).filter((e) => e.name.toLowerCase().includes(needle));
   const sequences = (listing?.sequences ?? []).filter((s) => s.pattern.toLowerCase().includes(needle));
   const name = (path: string) => path.split("/").pop() ?? path;
+  const top = !remote && listing?.path == null;
+  const where = remote ? `${remote.name}: /${listing?.path ?? ""}` : (listing?.path ?? "Allowed folders");
 
   return (
     <div className="browser">
-      <div className="browser-path" title={listing?.path ?? "Allowed folders"}>
-        <button disabled={!listing?.path} onClick={() => void go(listing?.parent ?? null)} title="Up one folder">
+      <div className="browser-path" title={remote ? `${where}\n${remote.url}` : where}>
+        <button disabled={top} onClick={up} title="Up one folder">
           ↑
         </button>
         <span>
-          <bdi>{listing?.path ?? "Allowed folders"}</bdi>
+          <bdi>{where}</bdi>
         </span>
+        {remote && listing && (
+          <button
+            onClick={() =>
+              setDownloading({ connection: remote, path: listing.path ?? "", name: name(listing.path || remote.name) })
+            }
+            title="Download this folder"
+          >
+            ⤓
+          </button>
+        )}
       </div>
       <input
         className="browser-filter"
@@ -99,6 +143,23 @@ export function FileBrowser({ track, onOpen, openPath }: Props) {
         </div>
       )}
       <div className="browser-list">
+        {top &&
+          connections.map((c) => (
+            <div key={c.id} className="connection-row">
+              <button className="row" onClick={() => void goRemote(c, "")} title={c.url}>
+                <span className="row-name">🔌 {c.name}</span>
+                <span className="row-meta">{c.kind === "sftp" ? "NAS" : "S3"}</span>
+              </button>
+              <button onClick={() => void disconnect(c)} title="Disconnect">
+                ×
+              </button>
+            </div>
+          ))}
+        {top && (
+          <button className="row add-connection" onClick={() => setAdding(true)}>
+            <span className="row-name">+ Add connection (NAS or S3)</span>
+          </button>
+        )}
         {sequences.map((s) => (
           <button
             key={s.pattern}
@@ -110,28 +171,64 @@ export function FileBrowser({ track, onOpen, openPath }: Props) {
             <span className="row-meta">{s.count} files</span>
           </button>
         ))}
-        {entries.slice(0, MAX_ROWS).map((e) =>
-          e.kind === "dir" ? (
-            <button key={e.path} className="row" onClick={() => void go(e.path)}>
-              <span className="row-name">📁 {e.name}</span>
-            </button>
+        {entries.slice(0, MAX_ROWS).map((e) => {
+          const row =
+            e.kind === "dir" ? (
+              <button
+                key={e.path}
+                className="row"
+                onClick={() => void (remote ? goRemote(remote, e.path) : go(e.path))}
+              >
+                <span className="row-name">📁 {e.name}</span>
+              </button>
+            ) : (
+              <button
+                key={e.path}
+                className={`row ${e.path === openPath ? "row-open" : ""}`}
+                disabled={!e.openable}
+                title={remote ? "Opening files from a connection isn't supported yet" : undefined}
+                onClick={() => void openFile(e.path, e.name)}
+              >
+                <span className="row-name">{e.name}</span>
+                <span className="row-meta">{formatBytes(e.size)}</span>
+              </button>
+            );
+          return remote ? (
+            <div key={e.path} className="connection-row">
+              {row}
+              <button
+                onClick={() => setDownloading({ connection: remote, path: e.path, name: e.name })}
+                title={`Download ${e.name}`}
+              >
+                ⤓
+              </button>
+            </div>
           ) : (
-            <button
-              key={e.path}
-              className={`row ${e.path === openPath ? "row-open" : ""}`}
-              disabled={!e.openable}
-              onClick={() => void openFile(e.path, e.name)}
-            >
-              <span className="row-name">{e.name}</span>
-              <span className="row-meta">{formatBytes(e.size)}</span>
-            </button>
-          ),
-        )}
+            row
+          );
+        })}
         {entries.length > MAX_ROWS && (
           <div className="muted">{entries.length - MAX_ROWS} more; type in the filter to find them.</div>
         )}
         {listing && entries.length === 0 && sequences.length === 0 && <div className="muted">Nothing here.</div>}
       </div>
+      {downloading && (
+        <DownloadDialog
+          name={downloading.name}
+          onCancel={() => setDownloading(null)}
+          onDownload={(folder, overwrite, verify) => void download(folder, overwrite, verify)}
+        />
+      )}
+      {adding && (
+        <ConnectionDialog
+          onCancel={() => setAdding(false)}
+          onConnected={(connection) => {
+            setAdding(false);
+            setConnections((list) => [...list, connection]);
+            void goRemote(connection, "");
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -3,9 +3,12 @@
 One step at a time, in order. A step is done when it meets "Done" and the user has reviewed it.
 `[ ]` todo · `[~]` in progress · `[x]` done. Resolve a step's open decisions before starting it.
 
-**Current:** 1.7a reviewed and done. Next: 1.8 (D8, D10 decided; start by proposing the output/format choices).
+**Current:** 2.2 reviewed and done; README and user docs (`docs/`) written for merging. Next: 2.3 (real NAS/S3
+check still to do, D12).
+Phase 2 (2.1–2.3) runs before 1.8/1.9.
 Open items: Starlette TestClient warns `httpx` → `httpx2` (harmless); threshold's default value 0 keeps everything.
-Manual test guide: `docs/manual_testing.md` (update it per step).
+Manual test guide: `docs/manual_testing.md` (update it per step). User docs: `README.md`, `docs/*.md` (update with
+features).
 
 ## Phase 0: Foundations
 
@@ -133,10 +136,49 @@ Scope: local/NFS files. TIFF (multi-page), PNG, JPG, HDF5. Axes `(Y, X)`, `(T, Y
 - Done: a colleague installs and uses it from the README alone.
 
 ## Phase 2: Remote storage and copying
-- `StorageBackend`: Local (also NFS), SFTP, S3. Port from legacy.
-- Transfers between backends: progress, cancel, resume, integrity check. `pd-xray-storage` CLI.
+
+Done before 1.8/1.9 (user request). Port legacy `src/pd_xray/data/backends/` after re-checking.
+
+### [x] 2.1 Access: connect and browse
+- storage: small backend interface (list, stat, exists, seekable range-read `open`). Local (also NFS), SFTP
+  (Synology NAS, extra `[sftp]`), S3 (custom endpoint, extra `[s3]`). Connection settings separate from credentials.
+- Clear errors: auth failed, host unreachable, bucket/path missing. Credentials never in logs or errors.
+- Python credentials: SSH key/agent or password; AWS profile/env or keys.
+- Server: add/test/remove connections, per browser, credentials in memory only; settings (no secrets) remembered.
+  File browser shows connections as extra roots.
+- UI: "Add connection" dialog (NAS / S3) with Test.
+- Done: the user's real NAS and S3 bucket browse from Python and the UI.
+- Built: `Storage` (`stat`, `list`, `open`, `exists`, `check`, `url`), `LocalStorage`, `SFTPStorage` (asyncssh on a
+  private loop thread, reconnects once), `S3Storage` (boto3, path-style for custom endpoints). Unknown SSH host key:
+  `HostKeyError.fingerprint`, trusted via `host_key=`. Server: browser-id cookie, `/api/connections` (POST tests
+  first), `…/{id}/files`; server never uses its own SSH keys/agent/AWS credentials. UI: dialog with host-key trust
+  prompt and saved settings (localStorage, no secrets); 🔌 connections at the browser's top level, remote files greyed.
+- Measured (local OpenSSH, machine at full load): connect + list 0.17–0.34 s; S3 (moto server) connect + list 0.75 s;
+  10 MB range reads ≈ raw asyncssh speed (150 MB/s loaded). Not yet tried on the real NAS/S3.
+
+### [x] 2.2 Download: remote → local
+- `copy(src, dst, progress, cancel)` for files and folders: streamed, bounded buffers, parallel parts, `.part` then
+  rename, resume, integrity check (size; optional checksum). `pd-xray-storage copy` CLI.
+- Server: copy job (status bar progress, cancel). UI: select files/folder → "Download to…" a server folder.
+- Done: a multi-GB file downloads from NAS and S3, from Python and the UI. Cancel and resume work. Speed measured.
+- Built: `Storage.read_range` (thread-safe) and `md5` (S3 single-part ETag); `open` shared in the base.
+  `copy(source, path, destination, path, overwrite, verify, workers, progress, cancel)` → `CopyResult`; local
+  destinations only (2.3 adds others). 4 files at once, 4 × 8 MB reads in flight per file. Hidden
+  `.<name>.<size>-<mtime>.pd-xray-part` files, kept on cancel, resumed. `pd-xray-storage ls|copy` (cp-like folder
+  target). Server: `POST /api/jobs/download`, jobs carry `unit` and `rate`. UI: ⤓ per remote row and for the folder
+  shown, destination dialog (remembers the last folder), status bar shows bytes, MB/s and time left.
+- Measured (local OpenSSH, idle machine): 3 GB at 355–370 MB/s via Python, CLI and UI (OpenSSH `sftp` 678 MB/s).
+  More chunks or several SSH connections are not faster (Python-bound). Cancel → resume continued from 940 MB;
+  result byte-identical. S3 speed not measured (moto's server caps at ~18 MB/s, boto3's own downloader too).
+
+### [ ] 2.3 Copy to any destination
+- Same `copy` for every pair: local→NAS/S3, NAS↔S3. Remote→remote streams through the server, no temp file. S3
+  multipart upload.
+- UI: destination picker over all connections.
+- Done: local→NAS, NAS→S3, S3→local work and pass the integrity check.
+
+### [ ] 2.4 Open remote datasets (later)
 - io reads remote files lazily (range requests), falling back to download.
-- UI: connections (in-memory credentials), remote browser, copy dialog.
 
 ## Phase 3: Hosted deployment
 - Docker (conda). GPU ops via CuPy with CPU parity tests.
@@ -154,6 +196,7 @@ Tomography and 3D views, Zarr/remote-friendly layout, segmentation/dendrite anal
 | # | Decision | Step | Leaning |
 |---|----------|------|---------|
 | D9 | How inter-package deps resolve for outside installs (`pd-xray-storage` alone can't find `pd-xray-core`) | 1.9 | Private index or PyPI vs git direct references |
+| D12 | Test targets: NAS host/folder, S3 provider (AWS/MinIO/Synology/…) and bucket | 2.1 | User provides |
 
 ## Decisions log
 
@@ -203,3 +246,17 @@ Tomography and 3D views, Zarr/remote-friendly layout, segmentation/dendrite anal
   absolute.
 - 2026-10-25: 1.7a added before 1.8: tone adjustments both as display setting and pipeline step; step output in the
   black..white range; highlights/shadows per pixel (no local masks); histogram of the frame on screen, editable.
+- 2026-10-25: Phase 2 (2.1 access, 2.2 download, 2.3 any-to-any copy) before 1.8/1.9. Remote dataset opening is 2.4.
+- 2026-10-25: Credentials per browser, in server memory only (lost on restart). Connection settings without secrets
+  are remembered.
+- 2026-10-25: Libraries: fastest option. S3: boto3 (parallel multipart transfers). SFTP: decided by benchmark (D11).
+- 2026-10-25: D11: asyncssh 2.24.0 for SFTP (local OpenSSH, 1 GB: 359 vs 288 MB/s whole file, 372 vs 131 MB/s 10 MB
+  range reads vs paramiko). boto3 1.43.114 for S3. moto 5.2.4 for S3 tests (dev only); SFTP tests use asyncssh's server.
+- 2026-10-25: Server connections need their own credentials (password/key, access keys); the server account's SSH
+  keys, agent and AWS credentials are never used. Unknown host keys are shown to the user to trust (fingerprint).
+- 2026-10-25: 2.2 checks: size always, plus S3's stored MD5 when it is a plain MD5; optional SHA-256 `verify`.
+  Identical files (size + mtime) are skipped; different ones stop the copy unless overwrite. UI downloads go anywhere
+  inside the allowed folders. Copies keep the source mtime. Part files are kept on cancel (resume), unlike D8.
+- 2026-10-25: Built UI (`pd-xray-server/.../static/`) is committed (no longer ignored), so users need no Node; rebuild
+  and commit it after frontend changes. README is short (quick start, web app); details in `docs/` (installation,
+  web app, io, processing, storage, core, development). Verified from a clean copy with a new conda env.

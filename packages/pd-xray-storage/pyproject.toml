@@ -11,5 +11,13 @@ license = "MIT"
 requires-python = ">=3.10"
 dependencies = ["pd-xray-core"]
 
+[project.optional-dependencies]
+sftp = ["asyncssh>=2.21,<3"]
+s3 = ["boto3>=1.40,<2"]
+all = ["pd-xray-storage[sftp,s3]"]
+
+[project.scripts]
+pd-xray-storage = "pd_xray.storage.cli:main"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/pd_xray"]

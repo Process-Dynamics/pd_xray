@@ -33,12 +33,14 @@ class Job:
     """A background job. Fields change only under the manager's lock.
 
     Attributes:
+        unit: What `current`/`total` count, e.g. "bytes" ("" for items such as frames).
         result: Return value of the work function (JSON-compatible), once done.
         error: Error message, once failed.
     """
 
     id: str
     title: str
+    unit: str = ""
     state: JobState = "queued"
     current: int = 0
     total: int | None = None
@@ -52,15 +54,19 @@ class Job:
     last_notified: float = 0.0
 
     def snapshot(self) -> dict[str, Any]:
-        """JSON description for the UI, including `fraction` and `eta_seconds` (None if unknown)."""
+        """JSON description for the UI, including `fraction`, `eta_seconds` and `rate` (units per second since the
+        start; None if unknown)."""
         fraction = Progress(self.current, self.total).fraction
-        eta = None
-        if self.state == "running" and self.started is not None and fraction:
-            elapsed = time.time() - self.started
-            eta = elapsed * (1 - fraction) / fraction
+        eta = rate = None
+        if self.state == "running" and self.started is not None:
+            elapsed = max(time.time() - self.started, 1e-3)
+            rate = self.current / elapsed
+            if fraction:
+                eta = elapsed * (1 - fraction) / fraction
         return {
             "id": self.id,
             "title": self.title,
+            "unit": self.unit,
             "state": self.state,
             "current": self.current,
             "total": self.total,
@@ -70,6 +76,7 @@ class Job:
             "started": self.started,
             "finished": self.finished,
             "eta_seconds": eta,
+            "rate": rate,
             "result": self.result,
             "error": self.error,
         }
@@ -90,9 +97,9 @@ class JobManager:
         self._keep = keep
         self._lock = threading.Lock()
 
-    def submit(self, title: str, work: Work) -> dict[str, Any]:
-        """Queue `work` and return the new job's snapshot."""
-        job = Job(uuid.uuid4().hex[:12], title)
+    def submit(self, title: str, work: Work, unit: str = "") -> dict[str, Any]:
+        """Queue `work` and return the new job's snapshot. `unit` says what its progress counts, e.g. "bytes"."""
+        job = Job(uuid.uuid4().hex[:12], title, unit)
         with self._lock:
             self._jobs[job.id] = job
             finished = [j.id for j in self._jobs.values() if j.state in _FINISHED]
