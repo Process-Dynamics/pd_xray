@@ -1,0 +1,15 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pd-xray-storage"
+version = "0.1.0"
+description = "Storage backends (local/NFS, SFTP, S3) and file transfers for pd_xray."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+dependencies = ["pd-xray-core"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pd_xray"]

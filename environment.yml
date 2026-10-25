@@ -1,0 +1,21 @@
+name: pd-xray
+channels:
+  - conda-forge
+  - nodefaults
+dependencies:
+  - python=3.12
+  - numpy=1.26.4
+  - h5py=3.16.0
+  - hdf5plugin=7.1.0
+  - tifffile=2025.5.10
+  - pillow=12.3.0
+  - scipy=1.15.2
+  - scikit-image=0.25.2
+  - pyyaml=6.0.3
+  - pip
+  - pip:
+      - ./packages/pd-xray-core
+      - ./packages/pd-xray-storage
+      - ./packages/pd-xray-io[all]
+      - ./packages/pd-xray-processing
+      - ./packages/pd-xray-server

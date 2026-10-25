@@ -61,7 +61,7 @@ environment.yml, environment-dev.yml
 - Keep the native dtype (usually uint16). Conversions are explicit.
 - For remote data, prefer range requests/streaming with bounded buffers.
 - Display settings (contrast, colour map, downsampling) never modify data.
-- Named axes, e.g. `(T, Y, X)`. Structure is auto-discovered or user-supplied, never silently guessed.
+- Named axes from `pd_xray.core.axes`, e.g. `("angle", "y", "x")`. Arrays end with `y, x` (+ optional `channel`). Structure is auto-discovered or user-supplied, never silently guessed.
 - Long library operations take an optional progress callback and cancel token (from `core`). Libraries never print or
   use tqdm.
 - Server: long work runs as background jobs pushing progress to the UI status bar. Never block the event loop.
@@ -86,9 +86,11 @@ docstrings stating array axes and dtype.
   1.26.4, Python 3.10 and linux-aarch64. The Jetson uses system Python 3.10.12, and dev envs use 3.12.
 
 ```bash
-conda env create -f environment-dev.yml && conda activate pd-xray-dev
-pip install -e packages/pd-xray-core -e packages/pd-xray-storage[all] ...
-ruff check packages && ruff format --check packages && mypy packages && pytest packages
+conda env create -f environment-dev.yml      # installs all packages editable
+conda activate pd-xray-dev                   # or call ~/miniconda3/envs/pd-xray-dev/bin/<tool> directly
+ruff check packages && ruff format --check packages && mypy && pytest
 ```
 
-Commands are set up in step 0.1. Update this section if they change.
+- Tool config is in root `ruff.toml`, `mypy.ini` (strict, src only) and `pytest.ini` (importlib mode).
+- When adding a dependency, add it to the package's `pyproject.toml` and, if it's a conda-first library, also to both
+  environment files.
