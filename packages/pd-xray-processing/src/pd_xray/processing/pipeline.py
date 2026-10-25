@@ -5,7 +5,7 @@ File format (version 1):
     pd_xray_pipeline: 1
     steps:
       - op: flat_field
-        params: {dark: "scan/*_dar.tif", flat: null}
+        params: {dark: scan/dar, flat: [scan/flat_1.tif, scan/flat_2.tif]}
       - op: gaussian
         params: {sigma: 2.0}
         enabled: false
@@ -20,11 +20,23 @@ import numpy as np
 import yaml
 from numpy.typing import NDArray
 
-from pd_xray.core import CancelToken, PdXrayError, ProgressCallback, track
+from pd_xray.core import CancelToken, PdXrayError, Progress, ProgressCallback, track
 from pd_xray.processing.operations import OPERATIONS, Frame
 
 VERSION = 1
 _VERSION_KEY = "pd_xray_pipeline"
+
+Reference = str | tuple[str, ...]
+"""An unresolved reference parameter: one string, or several (stored as a list in the file, a tuple here)."""
+
+
+def _reference(value: Any) -> Reference | None:
+    """The hashable reference in a parameter value, or None if it holds no unresolved reference."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return tuple(value)
+    return None
 
 
 @dataclass(frozen=True)
@@ -55,12 +67,29 @@ class Pipeline:
                 raise PdXrayError(f"Step {index + 1} ({step.op}): {error}") from None
         self.steps: tuple[Step, ...] = tuple(checked)
 
-    def __call__(self, frame: NDArray[Any]) -> Frame:
-        """Process one frame (y, x) or (y, x, channel). Returns a new float32 frame."""
+    def __call__(
+        self, frame: NDArray[Any], progress: ProgressCallback | None = None, cancel: CancelToken | None = None
+    ) -> Frame:
+        """Process one frame (y, x) or (y, x, channel). Returns a new float32 frame.
+
+        Args:
+            frame: Input frame, any numeric dtype.
+            progress: Optional callback, called before each enabled step (message = operation name) and at the end.
+            cancel: Optional cancel token, checked before each step.
+
+        Raises:
+            OperationCancelledError: If `cancel` is cancelled.
+        """
         result: Frame = np.array(frame, dtype=np.float32)
-        for step in self.steps:
-            if step.enabled:
-                result = OPERATIONS[step.op].function(result, **step.params)
+        enabled = [step for step in self.steps if step.enabled]
+        for done, step in enumerate(enabled):
+            if cancel is not None:
+                cancel.raise_if_cancelled()
+            if progress is not None:
+                progress(Progress(done, len(enabled), step.op))
+            result = OPERATIONS[step.op].function(result, **step.params)
+        if progress is not None:
+            progress(Progress(len(enabled), len(enabled), ""))
         return result
 
     def __eq__(self, other: object) -> bool:
@@ -70,26 +99,27 @@ class Pipeline:
         return f"Pipeline({list(self.steps)})"
 
     @property
-    def references(self) -> set[str]:
-        """Reference strings (e.g. dark/flat locations) that still need `resolve()`."""
+    def references(self) -> set[Reference]:
+        """References (e.g. dark/flat locations) that still need `resolve()`. Lists appear as tuples."""
         return {
-            value
+            reference
             for step in self.steps
             for param in OPERATIONS[step.op].params
-            if param.kind == "reference" and isinstance(value := step.params[param.name], str)
+            if param.kind == "reference" and (reference := _reference(step.params[param.name])) is not None
         }
 
-    def resolve(self, load: Callable[[str], NDArray[Any]]) -> "Pipeline":
-        """A copy with reference strings replaced by the frames `load(reference)` returns (once per reference)."""
+    def resolve(self, load: Callable[[Reference], NDArray[Any]]) -> "Pipeline":
+        """A copy with references replaced by the frames `load(reference)` returns (once per reference)."""
         loaded = {reference: np.asarray(load(reference), dtype=np.float32) for reference in self.references}
-        return Pipeline(
-            Step(
-                step.op,
-                {k: loaded.get(v, v) if isinstance(v, str) else v for k, v in step.params.items()},
-                step.enabled,
-            )
-            for step in self.steps
-        )
+
+        def swap(step: Step) -> Step:
+            params = dict(step.params)
+            for param in OPERATIONS[step.op].params:
+                if param.kind == "reference" and (reference := _reference(params[param.name])) is not None:
+                    params[param.name] = loaded[reference]
+            return Step(step.op, params, step.enabled)
+
+        return Pipeline(swap(step) for step in self.steps)
 
     def to_dict(self) -> dict[str, Any]:
         """Plain data for saving.

@@ -3,7 +3,8 @@
 One step at a time, in order. A step is done when it meets "Done" and the user has reviewed it.
 `[ ]` todo · `[~]` in progress · `[x]` done. Resolve a step's open decisions before starting it.
 
-**Current:** Step 1.4 done, awaiting user review. Next: 1.5. Before starting 1.5, ask the user about D4, D5 and D7.
+**Current:** 1.7a reviewed and done. Next: 1.8 (D8, D10 decided; start by proposing the output/format choices).
+Open items: Starlette TestClient warns `httpx` → `httpx2` (harmless); threshold's default value 0 keeps everything.
 Manual test guide: `docs/manual_testing.md` (update it per step).
 
 ## Phase 0: Foundations
@@ -25,8 +26,9 @@ Manual test guide: `docs/manual_testing.md` (update it per step).
     blosc (stored uncompressed). **Broken extent:** the shape claims about 8.9e18 frames, but there are 5598 chunks
     written up to frame 5615. 18 frames are missing (in a period-910 pattern) and read as fill value 0. Listing takes
     27 ms, and a frame read takes 10–24 ms.
-  - `data/24_I20231030_1/0042/0042__NNNNNN_{dar,img}.tif`: a sequence of 25 single-frame TIFFs (9 dark, 16 image),
-    uint16 with 12-bit values, 2101×5120, uncompressed. Orientation tag = 3 (180°). About 7 ms per file.
+  - `data/24_I20231030_1/0042/0042__NNNNNN_img.tif`: a sequence of 13 single-frame TIFFs (darks/flats now in `dar/`,
+    `flat/` subfolders), uint16 with 12-bit values, 2101×5120, uncompressed. Orientation tag = 3 (180°). About 7 ms per
+    file.
   - `data/0042_img_multipage.tif`: the 16 `*_img.tif` frames as one multi-page TIFF (made with `convert`).
   - `data/labelled_data/imagesTr/*.tif`: single 2D TIFFs (8 MB), plus label TIFFs. Legacy segmentation data.
 
@@ -60,7 +62,7 @@ Scope: local/NFS files. TIFF (multi-page), PNG, JPG, HDF5. Axes `(Y, X)`, `(T, Y
 - Done: sequence→multi-page TIFF exact, memmapped (6 ms/frame). uint16→PNG exact. float32→PNG within half a step.
   Py3.10 tested.
 
-### [~] 1.4 processing
+### [x] 1.4 processing
 - Deps: scipy, scikit-image, PyYAML (env pins 1.15.2 / 0.25.2 / 6.0.3; last py3.10 lines).
 - `OPERATIONS` registry: `Operation` (name, title, description, typed `Param`s, frame function). Frames are float32
   (pipelines cast on input); ops return new float32 frames.
@@ -73,22 +75,53 @@ Scope: local/NFS files. TIFF (multi-page), PNG, JPG, HDF5. Axes `(Y, X)`, `(T, Y
   2304×4096 frame. Speed-ups (threads over frames in 1.8, GPU in Phase 3) later.
 - Done: numerical test per op. Pipeline file round-trips. Real-data pipeline matches a manual computation.
 
-### [ ] 1.5 server
+### [x] 1.5 server
 - FastAPI + `pd-xray serve` (host, port, allowed roots, open browser).
 - APIs: browse files (within allowed roots), open/inspect datasets, frame tiles (cached), jobs (progress events,
   cancel) (D4, D5, D7).
 - Done: endpoints work, and a job reports progress and cancels without blocking other requests.
+- Built: `/api/files` (roots only, symlink/`..` escapes refused), `/api/inspect`, `/api/datasets` (file, HDF5 dataset,
+  folder + pattern), `…/frames/{i}/stats`, `…/frames/{i}/tiles/{level}/{col}_{row}.{png|jpeg}?vmin&vmax`, jobs
+  (`value-range` job, cancel), WebSocket `/api/events`. One byte-bounded LRU cache (frames, levels, tiles), each entry
+  computed once under concurrency. Level n = 2×2 mean of level n−1. Grey only; colour maps in 1.6.
+- Measured on the 99 GB file (512 px tiles): cold frame, whole-frame tile 20–50 ms; level-1/0 tiles 3–8 ms after; new
+  contrast 2 ms. Cancel stops within ~5 frames. Tiles stay < 0.1 s while two jobs run. Py3.10 tested.
 
-### [ ] 1.6 frontend: browser, viewer, status bar
+### [x] 1.6 frontend: browser, viewer, status bar
 - Framework (D6). Layout: file browser, viewer, side panel, status bar.
 - Viewer: pan/zoom, frame slider with keys, display contrast/colour map.
 - Status bar: loading, jobs with progress/ETA/cancel, errors.
 - Done: TIFF and HDF5 scrub smoothly. About 200 ms per 2k×2k uint16 frame (revise after measuring).
+- Built: frames load hidden and swap in when complete (screen never mixes frames). Latest-wins loading, next-frame
+  prefetch while stepping. Auto-reopen after a server restart. Sequences auto-discovered in folder listings. Colour maps
+  on tiles (`cmap`). Built UI served at `/`.
+- Measured in headless Chrome, 99 GB file (2304×4096): open 0.19 s; arrow step 67 ms (prefetched; ~115 ms cold);
+  holding a key ~10 frames/s; same during a job. 2101×5120 TIFF sequence 67 ms; 512² 23 frames/s.
+- Later if needed: playback button, pixel value under the cursor, keeping zoom on reopen.
 
-### [ ] 1.7 processing panel
+### [x] 1.7 processing panel
 - Ops from the registry, auto-built controls. Add/remove/reorder/toggle steps.
 - Live preview on the current frame. Original/processed toggle.
 - Done: preview updates quickly and never blocks the slider.
+- Built: `GET /api/operations`, `POST …/frames/{i}/preview` (exact, full resolution; a newer preview from the same tab
+  cancels the older between steps), `pipeline=` on tiles/stats. Panel: add/remove/reorder/toggle, controls from the
+  registry, per-step timings, Original/Processed toggle (P), separate contrast for processed. Reference picker: a folder
+  or chosen files. `Pipeline.__call__(frame, progress, cancel)`; reference params may be a list of paths.
+- Measured, 2101×5120 sequence: flat field (9 darks folder + 3 flat files) 0.25 s first, 0.05 s per frame; + median 3
+  1.0 s, median 5 3.1 s. Slider answers in < 10 ms while processing; fast stepping processes only the last frame.
+
+### [x] 1.7a tone and histogram (user request)
+- Tone: exposure, contrast, whites, blacks, highlights, shadows (per pixel), tone curve. One shared function, used as
+  a display setting (tiles only) and as a `tone` pipeline step (black..white → 0..1 → adjust → back to black..white).
+- Histogram of the frame on screen (linear/log). Drag black/white handles = display Min/Max; the tone curve is drawn
+  over it and editable there. "Add as step" turns the display tone into a pipeline step.
+- Done: adjustments and curve edits update the view quickly; the step matches the display.
+- Built: `tone_map()`, `TONE_PARAMS`, `tone` op and `curve` param kind (processing); `tone=` on tiles,
+  `GET …/histogram`, `GET /api/tone-curve` (curves drawn from the same function). UI: histogram with Min/Max handles
+  and curve editing, histogram Reset (straight curve + auto Min/Max), tone sliders + Reset, "Add as step", curve
+  editor in the Tone step card.
+- Measured: histogram 70–85 ms per full frame (5 ms cached); tone +5 ms per tile; tone step 0.15–0.35 s per 10 MP
+  frame; slider or curve change to new tiles ~0.3–0.4 s. Display and step match exactly at full resolution.
 
 ### [ ] 1.8 pipeline save and run
 - Save/load the pipeline. Apply it to the dataset: pick output and format, run as a background job, cancel (D8).
@@ -120,11 +153,6 @@ Tomography and 3D views, Zarr/remote-friendly layout, segmentation/dendrite anal
 
 | # | Decision | Step | Leaning |
 |---|----------|------|---------|
-| D4 | Progress transport | 1.5 | WebSocket |
-| D5 | Tiles: 8-bit rendered vs raw 16-bit + WebGL | 1.5 | 8-bit first, API open to 16-bit |
-| D6 | Frontend framework and viewer | 1.6 | React + OpenSeadragon |
-| D7 | Job workers: threads vs processes | 1.5 | Threads first |
-| D8 | Partial output on cancel | 1.8 | Delete it |
 | D9 | How inter-package deps resolve for outside installs (`pd-xray-storage` alone can't find `pd-xray-core`) | 1.9 | Private index or PyPI vs git direct references |
 
 ## Decisions log
@@ -155,3 +183,23 @@ Tomography and 3D views, Zarr/remote-friendly layout, segmentation/dendrite anal
 - 2026-10-25: D3: first ops as listed in 1.4. scipy + scikit-image + PyYAML are required processing deps.
 - 2026-10-25: D2: YAML pipeline files. Processing works on frame iterables; callers read/write with io.
 - 2026-10-25: Pipelines work in float32. Output dtype/scaling is chosen at write time (1.8).
+- 2026-10-25: D4: WebSocket for job progress. D5: server-rendered 8-bit tiles first, API open to raw 16-bit.
+  D7: jobs run in a thread pool.
+- 2026-10-25: Server deps: fastapi 0.142.2 (conda `fastapi-core`), uvicorn 0.54.0, websockets 16.1.1 (last py3.10
+  line). httpx 0.28.1 for tests only.
+- 2026-10-25: D6: React + OpenSeadragon, plain React + CSS (no UI kit or state library). Reliability first, then speed.
+  Mature lines pinned: Node 24 LTS (conda-forge, dev env only), React 19.2, OpenSeadragon 6.1.1, Vite 7.3, TypeScript
+  5.9.3, Vitest 4.1. Built assets ship in pd-xray-server, so users never need Node.
+- 2026-10-25: Colour maps are built-in 256-entry tables in the server (grey, inverted grey, viridis, magma, inferno,
+  cividis, ImageJ fire). No matplotlib.
+- 2026-10-25: Frontend formatter: Prettier 3.9.9, defaults with width 120.
+- 2026-10-25: References (dark/flat): a folder (all image files directly in it) or one or more files; every frame found
+  is averaged (mean). Relative paths resolve against the dataset's folder.
+- 2026-10-25: Preview is exact, at full resolution (user didn't choose; recommended option). Outdated previews are
+  cancelled.
+- 2026-10-25: D8: a cancelled run deletes its partial output.
+- 2026-10-25: D10: saved pipelines store reference paths, so the YAML file reproduces the run. Paths inside the
+  dataset folder are saved relative to it (the same file then works on other scans with the same layout), others
+  absolute.
+- 2026-10-25: 1.7a added before 1.8: tone adjustments both as display setting and pipeline step; step output in the
+  black..white range; highlights/shadows per pixel (no local masks); histogram of the frame on screen, editable.

@@ -209,3 +209,4 @@ __marimo__/
 # Rewrite: frontend
 node_modules/
 frontend/dist/
+packages/pd-xray-server/src/pd_xray/server/static/

@@ -89,8 +89,10 @@ docstrings stating array axes and dtype.
 conda env create -f environment-dev.yml      # installs all packages editable
 conda activate pd-xray-dev                   # or call ~/miniconda3/envs/pd-xray-dev/bin/<tool> directly
 ruff check packages && ruff format --check packages && mypy && pytest
+cd frontend && npm ci && npm run format:check && npm test && npm run build   # Node 24 (dev env); build -> server
 ```
 
-- Tool config is in root `ruff.toml`, `mypy.ini` (strict, src only) and `pytest.ini` (importlib mode).
+- Tool config is in root `ruff.toml`, `mypy.ini` (strict, src only) and `pytest.ini` (importlib mode). Frontend:
+  Prettier (`frontend/.prettierrc.json`, width 120; `npm run format`), strict `tsconfig.json`, Vitest.
 - When adding a dependency, add it to the package's `pyproject.toml` and, if it's a conda-first library, also to both
   environment files.

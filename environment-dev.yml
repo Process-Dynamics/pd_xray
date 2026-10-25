@@ -12,6 +12,11 @@ dependencies:
   - scipy=1.15.2
   - scikit-image=0.25.2
   - pyyaml=6.0.3
+  - fastapi-core=0.142.2
+  - uvicorn=0.54.0
+  - websockets=16.1.1
+  - httpx=0.28.1
+  - nodejs=24.21.0
   - pip
   - ruff=0.17.2
   - mypy=2.4.0

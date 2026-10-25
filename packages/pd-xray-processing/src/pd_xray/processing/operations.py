@@ -4,6 +4,7 @@ Every operation takes a float32 frame (y, x) or (y, x, channel) plus keyword par
 frame. Pipelines cast input frames to float32 before the first step.
 """
 
+import itertools
 import math
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
@@ -13,6 +14,7 @@ from typing import Any, Literal
 import numpy as np
 from numpy.typing import NDArray
 from scipy import ndimage
+from scipy.interpolate import PchipInterpolator
 from skimage.measure import block_reduce
 from skimage.restoration import rolling_ball as _rolling_ball
 from skimage.transform import resize
@@ -20,7 +22,8 @@ from skimage.transform import resize
 from pd_xray.core import CancelToken, PdXrayError, ProgressCallback, track
 
 Frame = NDArray[np.float32]
-ParamKind = Literal["float", "int", "bool", "choice", "reference"]
+ParamKind = Literal["float", "int", "bool", "choice", "reference", "curve"]
+Curve = list[list[float]]
 
 
 @dataclass(frozen=True)
@@ -28,7 +31,8 @@ class Param:
     """One operation parameter.
 
     `kind="reference"` names a frame loaded by the caller (e.g. averaged dark frames): pipeline files store it as a
-    string, and `Pipeline.resolve()` swaps in the array before running.
+    string or a list of strings (e.g. a folder, or several files), and `Pipeline.resolve()` swaps in the array before
+    running. `kind="curve"` is a list of [x, y] points in [0, 1] with increasing x (a tone curve).
     """
 
     name: str
@@ -53,7 +57,14 @@ class Param:
         if self.kind == "reference":
             if isinstance(value, (str, np.ndarray)):
                 return value
-            raise PdXrayError(f"Parameter '{self.name}' must be a reference string or an array, got {value!r}.")
+            if isinstance(value, (list, tuple)) and value and all(isinstance(v, str) for v in value):
+                return list(value)
+            raise PdXrayError(
+                f"Parameter '{self.name}' must be a reference string, a non-empty list of strings, or an array, "
+                f"got {value!r}."
+            )
+        if self.kind == "curve":
+            return _validate_curve(self.name, value)
         if self.kind == "choice":
             if value not in self.choices:
                 raise PdXrayError(f"Parameter '{self.name}' must be one of {list(self.choices)}, got {value!r}.")
@@ -97,6 +108,78 @@ class Operation:
 
     def __call__(self, frame: Frame, **params: Any) -> Frame:
         return self.function(frame, **self.validate(params))
+
+
+def _validate_curve(name: str, value: Any) -> Curve:
+    try:
+        points = [[float(x), float(y)] for x, y in value]
+    except (TypeError, ValueError):
+        raise PdXrayError(f"Parameter '{name}' must be a list of [x, y] points, got {value!r}.") from None
+    xs = [x for x, _ in points]
+    if len(points) < 2 or not all(0 <= v <= 1 for point in points for v in point):
+        raise PdXrayError(f"Parameter '{name}' needs at least 2 points with x and y in [0, 1].")
+    if any(b <= a for a, b in itertools.pairwise(xs)):
+        raise PdXrayError(f"Parameter '{name}' needs points in order of increasing x.")
+    return points
+
+
+IDENTITY_CURVE: Curve = [[0.0, 0.0], [1.0, 1.0]]
+
+TONE_PARAMS = (
+    Param("exposure", "float", 0.0, -5.0, 5.0, description="Exposure in stops: values are multiplied by 2**exposure."),
+    Param("contrast", "float", 0.0, -100.0, 100.0, description="S-curve around the mid-tone (negative: flatter)."),
+    Param("highlights", "float", 0.0, -100.0, 100.0, description="Brighten (+) or darken (-) the bright tones."),
+    Param("shadows", "float", 0.0, -100.0, 100.0, description="Brighten (+) or darken (-) the dark tones."),
+    Param("whites", "float", 0.0, -100.0, 100.0, description="Move the white point (+ makes more pixels white)."),
+    Param("blacks", "float", 0.0, -100.0, 100.0, description="Move the black point (- makes more pixels black)."),
+    Param("curve", "curve", IDENTITY_CURVE, description="Tone curve: [x, y] points, applied last."),
+)
+"""Tone adjustment parameters shared by `tone_map` and the `tone` operation."""
+
+
+def tone_map(
+    values: NDArray[Any],
+    exposure: float = 0.0,
+    contrast: float = 0.0,
+    highlights: float = 0.0,
+    shadows: float = 0.0,
+    whites: float = 0.0,
+    blacks: float = 0.0,
+    curve: Curve | None = None,
+) -> NDArray[np.float32]:
+    """Photo-style tone adjustment of values normalised to [0, 1] (black point 0, white point 1).
+
+    Every adjustment is per pixel and, with in-range settings, keeps the order of values (except a curve that falls).
+    Order: exposure, whites/blacks, shadows/highlights, contrast, curve. Slider values are -100..100.
+
+    Args:
+        values: Any shape, normalised so 0 is black and 1 white. Values outside are clipped; NaN stays NaN.
+        curve: Monotone cubic (PCHIP) through [x, y] points; flat beyond the first and last point. None: identity.
+
+    Returns:
+        float32 array of the same shape in [0, 1].
+    """
+    x = np.clip(np.asarray(values, dtype=np.float32) * np.float32(2.0**exposure), 0, 1)
+    if whites or blacks:
+        low, high = -0.25 * blacks / 100, 1 - 0.25 * whites / 100
+        x = np.clip((x - np.float32(low)) / np.float32(high - low), 0, 1)
+    if shadows or highlights:
+        # Bumps peaking at 1/3 (shadows) and 2/3 (highlights) and 0 at both ends. A 0.14 peak keeps the curve rising.
+        weight = np.float32(0.14 * 27 / 4 / 100)
+        x = x + weight * x * (1 - x) * (np.float32(shadows) * (1 - x) + np.float32(highlights) * x)
+    if contrast:
+        x = x + np.float32(contrast / 100) * (x * x * (3 - 2 * x) - x)  # blend towards smoothstep (an S-curve)
+    if curve is not None and curve != IDENTITY_CURVE:
+        points = np.asarray(curve, dtype=np.float64)
+        x = PchipInterpolator(points[:, 0], points[:, 1])(np.clip(x, points[0, 0], points[-1, 0])).astype(np.float32)
+    return np.clip(x, 0, 1).astype(np.float32, copy=False)
+
+
+def tone(frame: Frame, black: float, white: float, **settings: Any) -> Frame:
+    if white <= black:
+        raise PdXrayError(f"The white point ({white}) must be above the black point ({black}).")
+    span = np.float32(white - black)
+    return tone_map((frame - np.float32(black)) / span, **settings) * span + np.float32(black)
 
 
 def _spatial(frame: Frame, value: float) -> tuple[float, ...]:
@@ -181,8 +264,8 @@ def rolling_ball(frame: Frame, radius: float, light_background: bool) -> Frame:
 
 def flat_field(frame: Frame, dark: Frame | None, flat: Frame | None) -> Frame:
     for name, reference in (("dark", dark), ("flat", flat)):
-        if isinstance(reference, str):
-            raise PdXrayError(f"Reference '{reference}' for '{name}' isn't loaded; call Pipeline.resolve() first.")
+        if isinstance(reference, (str, list)):
+            raise PdXrayError(f"Reference {reference!r} for '{name}' isn't loaded; call Pipeline.resolve() first.")
         if reference is not None and reference.shape != frame.shape:
             raise PdXrayError(f"The {name} frame is {reference.shape}, but frames are {frame.shape}.")
     if dark is None and flat is None:
@@ -279,6 +362,17 @@ OPERATIONS: Mapping[str, Operation] = MappingProxyType(
                 "1 where the value is kept, 0 elsewhere.",
                 (Param("value", "float", 0.0), Param("keep", "choice", "above", choices=("above", "below"))),
                 threshold,
+            ),
+            Operation(
+                "tone",
+                "Tone (exposure, contrast, curve)",
+                "Photo-style tone adjustments between a black and a white point. Output stays in black..white.",
+                (
+                    Param("black", "float", 0.0, description="Value shown as black (maps to 0 before adjusting)."),
+                    Param("white", "float", 1.0, description="Value shown as white (maps to 1 before adjusting)."),
+                    *TONE_PARAMS,
+                ),
+                tone,
             ),
             Operation(
                 "crop",

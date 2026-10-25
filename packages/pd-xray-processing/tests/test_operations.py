@@ -3,7 +3,7 @@ import pytest
 from scipy import ndimage
 
 from pd_xray.core import PdXrayError
-from pd_xray.processing import OPERATIONS, average_frames
+from pd_xray.processing import OPERATIONS, Pipeline, Step, average_frames, tone_map
 
 RNG = np.random.default_rng(0)
 FRAME = RNG.uniform(0, 100, (40, 60)).astype(np.float32)
@@ -79,3 +79,32 @@ def test_flat_field_and_average() -> None:
         OPERATIONS["flat_field"](frame, dark="darks/*.tif")
     with pytest.raises(PdXrayError, match="dark frame is"):
         OPERATIONS["flat_field"](frame, dark=dark[:2])
+
+
+def test_tone_map_adjustments() -> None:
+    x = np.linspace(0, 1, 1001, dtype=np.float32)
+    np.testing.assert_allclose(tone_map(x), x, atol=1e-6)
+    np.testing.assert_allclose(tone_map(x, exposure=1), np.minimum(2 * x, 1), atol=1e-6)
+    for name in ("contrast", "highlights", "shadows", "whites", "blacks"):
+        for value in (-100, 100):  # every slider keeps the order of values and stays in [0, 1]
+            y = tone_map(x, **{name: value})
+            assert np.all(np.diff(y) >= -1e-6) and y.min() >= 0 and y.max() <= 1, (name, value)
+    assert tone_map(x, contrast=100)[250] < 0.25 < 0.75 < tone_map(x, contrast=100)[750]
+    assert tone_map(x, shadows=50)[333] > x[333] and tone_map(x, highlights=-50)[667] < x[667]
+    assert tone_map(x, blacks=-100)[200] == 0 and tone_map(x, whites=100)[800] == 1
+    np.testing.assert_allclose(tone_map(x, curve=[[0, 1], [1, 0]]), 1 - x, atol=1e-6)  # a curve may invert
+    y = tone_map(x, curve=[[0.2, 0.1], [0.5, 0.6], [1, 1]])
+    np.testing.assert_allclose(y[[0, 100, 200, 500]], [0.1, 0.1, 0.1, 0.6], atol=1e-6)  # flat before the first point
+    assert np.isnan(tone_map(np.array([np.nan], dtype=np.float32))[0])
+
+
+def test_tone_step_maps_black_white_and_back() -> None:
+    frame = np.array([[100.0, 550.0, 1000.0, 2000.0]], dtype=np.float32)
+    out = OPERATIONS["tone"](frame, black=100, white=1000, curve=[[0, 0], [0.5, 0.25], [1, 1]])
+    np.testing.assert_allclose(out, [[100, 325, 1000, 1000]], rtol=1e-6)  # 0.5 -> 0.25 of the span; above clips
+    with pytest.raises(PdXrayError, match="white point"):
+        OPERATIONS["tone"](frame, black=5, white=5)
+    with pytest.raises(PdXrayError, match="increasing x"):
+        Pipeline([Step("tone", {"curve": [[0.5, 0], [0.2, 1]]})])
+    with pytest.raises(PdXrayError, match="\\[x, y\\] points"):
+        Pipeline([Step("tone", {"curve": "linear"})])
