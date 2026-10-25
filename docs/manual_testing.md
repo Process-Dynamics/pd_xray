@@ -1,4 +1,4 @@
-# Manual testing guide: `pd_xray.core`, `io`, `processing`, `server`, web UI (steps 1.1–1.7)
+# Manual testing guide: `pd_xray.core`, `io`, `processing`, `storage`, `server`, web UI (steps 1.1–1.7a, 2.1–2.2)
 
 Each section is a block to paste into Python, with the expected result next to it. Run them from the repo root.
 
@@ -7,8 +7,8 @@ Each section is a block to paste into Python, with the expected result next to i
 ```bash
 source ~/miniconda3/bin/activate pd-xray-dev     # conda isn't on PATH in plain shells
 cd ~/pd_xray
-ruff check packages && ruff format --check packages && mypy && pytest   # expect: all pass, 66 tests
-cd frontend && npm ci && npm run format:check && npm test && npm run build && cd ..   # 6 tests; build goes into pd-xray-server
+ruff check packages && ruff format --check packages && mypy && pytest   # expect: all pass, 86 tests
+cd frontend && npm ci && npm run format:check && npm test && npm run build && cd ..   # 9 tests; build goes into pd-xray-server
 python                                           # then paste the blocks below
 ```
 
@@ -285,13 +285,75 @@ Open `24_I20231030_1/0042` → `▦ 0042__*_img.tif`. Top of the right panel:
 - `+ Add step… → Tone`: starts with the current Min/Max, so the frame doesn't go white. The step card has its own curve.
 - Works on `MG36212_1_0091_narrowfov_000000.h5` too (histogram ~70 ms, tone adds ~5 ms per tile).
 
-## 12. Python 3.10 (Jetson-like)
+## 12. Remote storage: connect and browse (2.1)
+
+Needs your NAS (SFTP enabled: Synology Control Panel › File Services › FTP › SFTP) and/or an S3 bucket. Without them,
+use local stand-ins: `moto_server -p 5055` (fake S3, any keys) and any SSH server.
+
+```python
+from pd_xray.storage import SFTPStorage, S3Storage, LocalStorage, HostKeyError, AuthenticationError
+nas = SFTPStorage("NAS_HOST", "USER", password="…", root="/volume1/SHARE")   # or key_file="~/.ssh/id_ed25519"
+nas.check()          # unknown host: HostKeyError with the fingerprint. Check it, then add host_key="SHA256:…"
+[(e.name, e.is_dir, e.size) for e in nas.list()]          # the share's top folder
+f = nas.open("SOME/FILE.tif"); f.seek(1000); f.read(16)   # reads only that range
+SFTPStorage("NAS_HOST", "USER", password="wrong", host_key="SHA256:…").check()   # AuthenticationError, no password in it
+SFTPStorage("10.255.255.1", "x", password="x").check()    # StorageConnectionError after 15 s
+
+s3 = S3Storage("BUCKET", access_key="…", secret_key="…", endpoint_url=None)   # or profile="…"; endpoint for non-AWS
+s3.check(); s3.list(); s3.list("some/folder")
+S3Storage("no-such-bucket-xyz", access_key="…", secret_key="…").check()     # FileNotFoundError: bucket doesn't exist
+nas.close(); s3.close()
+```
+
+Web UI (`pd-xray serve --root data --port 8765 --no-browser`):
+
+- File browser top level: "+ Add connection (NAS or S3)". NAS: host, user, folder, password (or private key file).
+  Connect: first time an amber note shows the server's key fingerprint → "Trust this key and connect".
+- The connection appears as 🔌 name at the top level; browse folders, ↑ goes back up and finally to the top. Remote
+  files are listed with sizes but are greyed out (opening comes in 2.4). × disconnects.
+- Wrong password → "refused the login"; unreachable host → "timed out" after 15 s. The dialog stays open to fix it.
+- Reopen the dialog: "Saved" lists earlier connections without passwords; click one to fill the form.
+- Another browser (or a private window) sees none of your connections. Restarting the server drops them all.
+
+## 13. Download: remote → local (2.2)
+
+Use a folder of a few GB on the NAS/S3 (REMOTE below) and an empty local folder.
+
+```python
+from pd_xray.storage import copy, LocalStorage
+from pd_xray.core import CancelToken, OperationCancelledError
+dst = LocalStorage(OUT)
+t = time.time(); print(copy(nas, "REMOTE", dst, "dl", progress=None), time.time() - t)   # CopyResult(copied=N, …)
+copy(nas, "REMOTE", dst, "dl")                    # skipped=N: identical files are not fetched again
+stop = CancelToken()
+def cut(p):
+    if p.current > 500e6: stop.cancel()
+copy(nas, "REMOTE", dst, "dl2", progress=cut, cancel=stop)   # OperationCancelledError; hidden *.pd-xray-part kept
+copy(nas, "REMOTE", dst, "dl2", verify=True)                 # resumes (log: "Resuming …"), checksummed=N
+copy(s3, "FOLDER", dst, "s3dl")                              # checksummed > 0 for single-part S3 uploads (MD5)
+```
 
 ```bash
-python3 -m venv /tmp/pd310 && /tmp/pd310/bin/pip install ./packages/pd-xray-core ./packages/pd-xray-storage "./packages/pd-xray-io[all]" ./packages/pd-xray-processing ./packages/pd-xray-server fastapi==0.142.2 uvicorn==0.54.0 websockets==16.1.1 httpx==0.28.1 pytest
+pd-xray-storage ls sftp://USER@NAS_HOST/volume1/SHARE --password          # unknown host: prints --host-key to add
+pd-xray-storage copy sftp://USER@NAS_HOST/volume1/SHARE/REMOTE /tmp/pd_xray_manual --password --host-key SHA256:…
+# progress line with MB/s; Ctrl-C then the same command resumes. S3: s3://BUCKET/KEY (--profile / --endpoint-url)
+```
+
+Web UI: in a connection, ⤓ next to a file/folder (or in the path bar for the folder shown) → pick a folder inside the
+allowed folders → Download here. Status bar: "1.2 GB/3.4 GB · MB/s · time left", × cancels; downloading again
+resumes. Hover a finished job for what it copied. Change a downloaded file, download again → error asks for
+"Overwrite different files". The dialog reopens in the last folder used.
+
+Measured (local OpenSSH, idle machine): 3 GB at 355–370 MB/s (OpenSSH `sftp` 678 MB/s); more parallel chunks or
+connections don't help (Python-bound). Moto's fake S3 is slow (17–19 MB/s, also for boto3 itself): measure real S3.
+
+## 14. Python 3.10 (Jetson-like)
+
+```bash
+python3 -m venv /tmp/pd310 && /tmp/pd310/bin/pip install ./packages/pd-xray-core "./packages/pd-xray-storage[all]" "./packages/pd-xray-io[all]" ./packages/pd-xray-processing ./packages/pd-xray-server fastapi==0.142.2 uvicorn==0.54.0 websockets==16.1.1 httpx==0.28.1 moto==5.2.4 pytest
 /tmp/pd310/bin/pip list | grep -iE "numpy|h5py|tifffile|pillow|scipy|scikit|yaml|fastapi|uvicorn|websockets"
 # 1.26.4, 3.16.0, 2025.5.10, 12.3.0, 1.15.3, 0.25.2, 6.0.3, 0.142.2, 0.54.0, 16.1.1
-cd /tmp && /tmp/pd310/bin/python -m pytest -q --import-mode=importlib ~/pd_xray/packages   # 69 passed
+cd /tmp && /tmp/pd310/bin/python -m pytest -q --import-mode=importlib ~/pd_xray/packages   # 86 passed
 ```
 
 Cleanup: `rm -rf /tmp/pd_xray_manual /tmp/pd310`.
