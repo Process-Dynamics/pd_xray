@@ -1,8 +1,8 @@
 """Command line: `pd-xray-storage ls URL` and `pd-xray-storage copy SOURCE DESTINATION`.
 
-Locations are local paths, `sftp://user@host[:port]/path` or `s3://bucket/key`. SFTP logs in with the SSH agent or
-~/.ssh keys, `--key-file`, or `--password` (asked for, never on the command line). S3 uses `--profile` or the usual
-AWS environment variables and ~/.aws files.
+Locations (source and destination) are local paths, `sftp://user@host[:port]/path` or `s3://bucket/key`. SFTP logs in
+with the SSH agent or ~/.ssh keys, `--key-file`, or `--password` (asked for, never on the command line). S3 uses
+`--profile` or the usual AWS environment variables and ~/.aws files. Connection options apply to both locations.
 """
 
 import argparse
@@ -37,7 +37,9 @@ def _parser() -> argparse.ArgumentParser:
     ls.add_argument("location")
     cp = commands.add_parser("copy", parents=[options], help="Copy a file or folder (resumes interrupted copies).")
     cp.add_argument("source")
-    cp.add_argument("destination", help="Local path. An existing folder receives the copy inside it, like cp.")
+    cp.add_argument(
+        "destination", help="Where the copy goes. An existing folder, or one ending in '/', gets it inside, like cp."
+    )
     cp.add_argument("--overwrite", action="store_true", help="Replace destination files that differ.")
     cp.add_argument("--verify", action="store_true", help="Compare SHA-256 of every copy (reads both twice).")
     cp.add_argument("--workers", type=int, default=4, help="Files copied at once (default: %(default)s).")
@@ -67,6 +69,13 @@ def _open(location: str, args: argparse.Namespace) -> tuple[Storage, str]:
     if url.scheme:
         raise PdXrayError(f"Unknown location type '{url.scheme}://'. Use a local path, sftp:// or s3://.")
     return LocalStorage("/"), str(Path(location).expanduser().resolve())
+
+
+def _is_dir(storage: Storage, path: str) -> bool:
+    try:
+        return storage.stat(path).is_dir
+    except FileNotFoundError:
+        return False
 
 
 def _show_progress(update: Progress, state: dict[str, float]) -> None:
@@ -101,7 +110,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             return
         destination, target = _open(args.destination, args)
         storages.append(destination)
-        if isinstance(destination, LocalStorage) and Path("/", target).is_dir():
+        if args.destination.endswith("/") or _is_dir(destination, target):
             target = f"{target}/{name_of(normalise_path(path)) or 'copy'}"
         state: dict[str, float] = {}
         result = copy(

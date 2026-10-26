@@ -5,6 +5,7 @@ loop in a background thread, so the methods here are ordinary blocking, thread-s
 """
 
 import asyncio
+import contextlib
 import logging
 import posixpath
 import threading
@@ -13,7 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from pd_xray.core import import_optional
-from pd_xray.storage.base import Entry, Storage, name_of, normalise_path
+from pd_xray.storage.base import Entry, Storage, Upload, name_of, normalise_path, part_name
 from pd_xray.storage.errors import AuthenticationError, HostKeyError, StorageConnectionError, StorageError
 
 if TYPE_CHECKING:
@@ -223,6 +224,13 @@ class SFTPStorage(Storage):
 
         return self._run(self._call(operation, path))
 
+    def upload(self, path: str, size: int, modified: float) -> Upload:
+        return _SFTPUpload(self, normalise_path(path), size, modified)
+
+    def remove(self, path: str) -> None:
+        path = normalise_path(path)
+        self._run(self._call(lambda sftp: sftp.remove(self._full(path)), path))
+
     def close(self) -> None:
         if self._closed:
             return
@@ -231,3 +239,58 @@ class SFTPStorage(Storage):
         self._loop.call_soon_threadsafe(self._loop.stop)
         self._thread.join()
         self._loop.close()
+
+
+class _SFTPUpload(Upload):
+    """Writes into the part file on the server; each write reopens it, so a dropped connection is reconnected."""
+
+    def __init__(self, storage: SFTPStorage, path: str, size: int, modified: float) -> None:
+        self._storage, self._path, self._modified = storage, path, modified
+        parent, _, name = path.rpartition("/")
+        self.part_path = self._part_path = f"{parent}/{part_name(name, size, modified)}".lstrip("/")
+        part, lib = storage._full(self._part_path), storage._asyncssh
+
+        async def start(sftp: "asyncssh.SFTPClient") -> int:
+            await sftp.makedirs(storage._full(parent), exist_ok=True)
+            try:
+                offset = int((await sftp.stat(part)).size or 0)
+            except lib.SFTPNoSuchFile:
+                offset = 0
+            if offset == 0 or offset > size:
+                async with sftp.open(part, "wb"):
+                    offset = 0
+            return offset
+
+        self.offset = storage._run(storage._call(start, path))
+
+    def write(self, data: bytes) -> None:
+        offset, part = self.offset, self._storage._full(self._part_path)
+
+        async def operation(sftp: "asyncssh.SFTPClient") -> None:
+            async with sftp.open(part, "r+b", max_requests=_MAX_REQUESTS) as file:  # writes run in parallel
+                await file.write(data, offset)
+
+        self._storage._run(self._storage._call(operation, self._path))
+        self.offset += len(data)
+
+    def commit(self) -> None:
+        storage, lib, mtime = self._storage, self._storage._asyncssh, self._modified
+        part, target = storage._full(self._part_path), storage._full(self._path)
+
+        async def operation(sftp: "asyncssh.SFTPClient") -> None:
+            async with sftp.open(part, "r+b") as file:
+                with contextlib.suppress(lib.SFTPOpUnsupported):
+                    await file.fsync()
+            await sftp.utime(part, (mtime, mtime))
+            try:
+                await sftp.posix_rename(part, target)  # replaces the target
+            except lib.SFTPOpUnsupported:
+                if await sftp.exists(target):
+                    await sftp.remove(target)
+                await sftp.rename(part, target)
+
+        storage._run(storage._call(operation, self._path))
+
+    def discard(self) -> None:
+        with contextlib.suppress(FileNotFoundError):
+            self._storage.remove(self._part_path)

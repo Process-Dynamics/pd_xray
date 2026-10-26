@@ -1,7 +1,7 @@
 # `pd_xray.io`: reading and writing image data
 
 ```python
-from pd_xray.io import open_dataset, open_sequence, convert, write_frames, iter_frames
+from pd_xray.io import open_dataset, open_sequence, convert, write_frames, iter_frames, map_frames, reference_frames
 ```
 
 Formats: HDF5 (`.h5 .hdf5 .hdf .nxs`), TIFF (single and multi-page, BigTIFF), PNG, JPG. Install the extras you need:
@@ -112,7 +112,9 @@ write_frames("out.tif", frames, shape=ds.shape, dtype=np.dtype("float32"), axes=
 | `.jpg` / `.jpeg` | One file per frame, uint8, lossy. | `quality=95` |
 
 The frames' dtype must match `dtype`, and the format must support it (`supports(path, dtype, frame_shape)` tells
-you); otherwise `write_frames` raises before writing.
+you); otherwise `write_frames` raises before writing. Output goes to a hidden `.out.tif.pd-xray-writing/` folder
+next to it and is moved into place when complete, so a failed or cancelled write leaves nothing behind and an
+existing file is only replaced on success.
 
 ## Converting
 
@@ -131,7 +133,39 @@ convert(ds, "out/preview.jpg", frames=7, quality=90)
 - Otherwise (float → PNG, uint16 → JPG) values are scaled linearly with **one** range for all frames, so frames stay
   comparable. The mapping is saved in the output's metadata as `value_scaling` (original ≈ offset + pixel × scale).
   By default the range is the data's min/max (an extra pass); give `value_range=(low, high)` to skip that and clip.
+- `dtype="uint16"` (or `"uint8"`, `"float32"`, …) chooses the output type: other integer types are scaled as above,
+  float types are exact casts.
 - `progress=` and `cancel=` work as described in [core](core.md).
+
+## Processing a whole dataset
+
+`map_frames(ds, function, workers=…)` is a lazy dataset of `function(frame)` for every frame, e.g. a processing
+pipeline. Pass it to `convert`: frames are read one at a time and `workers` of them are processed at once (filters
+scale almost linearly with threads; integer scaling also runs in those threads).
+
+```python
+from pd_xray.processing import Pipeline, Step
+
+pipeline = Pipeline([Step("median", {"size": 3}), Step("crop", {"top": 100, "height": 2000})])
+processed = map_frames(ds, pipeline, workers=16)     # shape from processing frame 0 once
+processed[5]                                         # one processed frame
+convert(processed, "out/median.tif", frames=slice(0, 1000), dtype="uint16", value_range=(0, 65535))
+```
+
+The source stays open (`processed.close()` does nothing); close it yourself.
+
+## Reference frames
+
+`reference_frames(reference, base)` yields every frame a pipeline reference names: a folder (every image file
+directly in it, natural order) or a list of files, relative to `base` (usually the dataset's folder). Average them
+to resolve a pipeline:
+
+```python
+from pd_xray.processing import average_frames
+resolved = pipeline.resolve(lambda ref: average_frames(reference_frames(ref, base="data/scan")))
+```
+
+`reference_files(reference, base)` lists the files only.
 
 ## In-memory arrays
 

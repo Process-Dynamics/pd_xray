@@ -1,14 +1,14 @@
 """Lazy, read-only datasets: array-like views of data in a file that read only what is indexed."""
 
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from types import TracebackType
 from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
 
-from pd_xray.core import Axes, validate_axes
+from pd_xray.core import Axes, frame_axes, validate_axes
 
 FRAME = "frame"
 """Axis name readers use for a frame axis whose meaning the file doesn't state. Users can rename it."""
@@ -20,7 +20,8 @@ class Dataset(ABC):
     Indexing (`ds[i]`, `ds[10:20, :512]`) reads only the requested region and returns a NumPy array in the native
     dtype. Datasets have `shape`, `dtype` and `ndim`, so they also work with `dask.array.from_array`.
 
-    Subclasses implement `__getitem__` and `close`.
+    Subclasses implement `__getitem__` and `close`, and may override `iter_frames` with a faster way to read every
+    frame in order.
 
     Attributes:
         shape: Array shape.
@@ -59,6 +60,20 @@ class Dataset(ABC):
     @abstractmethod
     def close(self) -> None:
         """Release file handles. Safe to call more than once."""
+
+    def iter_frames(self, first: Sequence[int] | None = None) -> Iterator[NDArray[Any]]:
+        """Yield 2D (or 2D + channel) frames in C order over the frame axes, one read at a time.
+
+        Args:
+            first: Indices along the first axis to include. All by default. Ignored for single-frame datasets.
+        """
+        n_frame_axes = len(frame_axes(self.axes))
+        if n_frame_axes == 0:
+            yield self[...]
+            return
+        for i in range(self.shape[0]) if first is None else first:
+            for rest in np.ndindex(*self.shape[1:n_frame_axes]):
+                yield self[(i,) + rest]
 
     def __len__(self) -> int:
         return self.shape[0]

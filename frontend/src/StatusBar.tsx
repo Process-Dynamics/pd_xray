@@ -74,16 +74,32 @@ export function StatusBar({ connected, busy, jobs, error, onCancel, onDismissErr
   );
 }
 
-/** "3/10", or for byte jobs "1.2 GB/3.4 GB · 110 MB/s". */
+/** "3/10 · 12.5/s", or for byte jobs "1.2 GB/3.4 GB · 110 MB/s". */
 function jobProgress(job: Job): string {
-  if (job.unit !== "bytes") return job.total ? `${job.current}/${job.total}` : String(job.current);
+  if (job.unit !== "bytes") {
+    const done = job.total ? `${job.current}/${job.total}` : String(job.current);
+    return job.rate && job.current ? `${done} · ${job.rate.toPrecision(3)}/s` : done;
+  }
   const done = job.total ? `${formatBytes(job.current)}/${formatBytes(job.total)}` : formatBytes(job.current);
   return job.rate ? `${done} · ${formatBytes(job.rate)}/s` : done;
 }
 
-/** What a finished download did, e.g. "Copied 12 files, skipped 3 identical, into /data/scan". */
+/** What a finished copy or run did, e.g. "Copied 12 files, skipped 3 identical, into /data/scan". */
 function jobSummary(job: Job): string | null {
-  const r = job.result as { copied?: number; skipped?: number; destination?: string } | null;
-  if (job.state !== "done" || !r || r.copied === undefined) return null;
-  return `Copied ${r.copied} files, skipped ${r.skipped ?? 0} identical, into ${r.destination ?? ""}`;
+  const r = job.result as {
+    copied?: number;
+    skipped?: number;
+    destination?: string;
+    frames?: number;
+    seconds?: number;
+    pipeline_file?: string;
+  } | null;
+  if (job.state !== "done" || !r) return null;
+  if (r.copied !== undefined) {
+    return `Copied ${r.copied} files, skipped ${r.skipped ?? 0} identical, into ${r.destination ?? ""}`;
+  }
+  if (r.frames !== undefined) {
+    return `Wrote ${r.frames} frames in ${formatDuration(r.seconds ?? 0)} to ${r.destination ?? ""}\nPipeline: ${r.pipeline_file ?? ""}`;
+  }
+  return null;
 }

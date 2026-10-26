@@ -54,27 +54,17 @@ Rough speed on a 2304 × 4096 frame (CPU): gaussian 0.7 s, median 3 about 3 s, r
 ## Flat/dark correction with reference frames
 
 Reference parameters (`dark`, `flat`) are file locations in a pipeline, so the pipeline can be saved. `resolve`
-loads them: give it a function that turns a location into a frame. A common choice averages every frame found:
+loads them: give it a function that turns a location into a frame. `pd_xray.io.reference_frames` reads a folder
+(every image in it) or a list of files, relative to a base folder, as the web app does:
 
 ```python
-from pathlib import Path
-from pd_xray.io import open_dataset, open_sequence, iter_frames
-
-def load(reference):
-    """A folder (all images in it), a file, or a list of files -> one averaged float32 frame."""
-    paths = [reference] if isinstance(reference, str) else list(reference)
-    if len(paths) == 1 and Path(paths[0]).is_dir():
-        dataset = open_sequence(paths[0])
-    elif len(paths) == 1:
-        dataset = open_dataset(paths[0])
-    else:
-        dataset = open_sequence(paths)
-    return average_frames(iter_frames(dataset), method="mean")
+from pd_xray.io import open_sequence, reference_frames
+from pd_xray.processing import average_frames
 
 scan = "data/24_I20231030_1/0042"
-pipeline = Pipeline([Step("flat_field", {"dark": f"{scan}/dar", "flat": [f"{scan}/flat/0042__000010_img.tif"]})])
+pipeline = Pipeline([Step("flat_field", {"dark": "dar", "flat": ["flat/0042__000010_img.tif"]})])
 pipeline.references            # what still needs loading
-corrected = pipeline.resolve(load)
+corrected = pipeline.resolve(lambda ref: average_frames(reference_frames(ref, base=scan)))
 out = corrected(open_sequence(scan, "*_img.tif")[0])
 ```
 
@@ -113,22 +103,46 @@ A pipeline with loaded arrays can't be saved; save the unresolved one.
 
 ## Processing a whole dataset
 
-`apply_pipeline` processes frames lazily, one at a time; pass it to `write_frames` so memory stays at one frame:
+Wrap the dataset with `pd_xray.io.map_frames` and write it with `convert`. Frames are read one at a time and
+`workers` are processed at once:
 
 ```python
-import numpy as np
 from pd_xray.core import CancelToken
-from pd_xray.io import open_sequence, iter_frames, write_frames
-from pd_xray.processing import apply_pipeline
+from pd_xray.io import convert, map_frames, open_sequence
 
 ds = open_sequence(scan, "*_img.tif")
-first = corrected(ds[0])                                   # output frame shape (crop/rotate may change it)
-frames = apply_pipeline(corrected, iter_frames(ds), total=ds.shape[0], progress=print)
-write_frames("out/corrected.tif", frames, shape=(ds.shape[0], *first.shape), dtype=np.dtype("float32"),
-             axes=ds.axes, metadata={"pipeline": pipeline.to_dict()})
+convert(map_frames(ds, corrected, workers=16), "out/corrected.tif", progress=print)   # float32, exact
+convert(map_frames(ds, corrected, workers=16), "out/corrected_u16.tif", dtype="uint16", value_range=(0, 2))
 ```
 
-`progress` receives one update per frame; `cancel=CancelToken()` lets another thread stop the run between frames.
+`progress` receives one update per frame; `cancel=CancelToken()` lets another thread stop the run between frames, and
+a cancelled run leaves no output. `apply_pipeline(pipeline, frames)` is the lower-level form: a lazy iterator of
+processed frames for `write_frames`.
+
+### Reproducing a web app run
+
+Every run from the web app writes `<output>.pipeline.yaml` next to its output: the pipeline (references relative to
+the dataset's folder) and a `run` section with the source, frames, output type, value range, date and versions. The
+same record is in the output's metadata (`pd_xray_run`). To repeat the run, or apply it to another scan with the same
+layout:
+
+```python
+import yaml
+from pathlib import Path
+from pd_xray.io import convert, map_frames, open_dataset, reference_frames
+from pd_xray.processing import Pipeline, average_frames
+
+record = Path("out/scan_processed.tif.pipeline.yaml")
+run = yaml.safe_load(record.read_text())["run"]
+pipeline = Pipeline.load(record)                       # ignores the run section
+with open_dataset(run["source"], dataset=run["dataset"]) as ds:  # TIFF: no dataset=; folder: open_sequence(source, pattern)
+    base = Path(run["source"]).parent                  # the dataset's folder (the folder itself for a sequence)
+    resolved = pipeline.resolve(lambda ref: average_frames(reference_frames(ref, base)))
+    frames = slice(*run["frames"]) if run["frames"] else None
+    convert(map_frames(ds, resolved, workers=16), "out/again.tif", frames, run["value_range"], dtype=run["dtype"])
+```
+
+The result is identical to the web app's.
 
 ## Tone mapping
 

@@ -3,8 +3,8 @@
 One step at a time, in order. A step is done when it meets "Done" and the user has reviewed it.
 `[ ]` todo · `[~]` in progress · `[x]` done. Resolve a step's open decisions before starting it.
 
-**Current:** 2.2 reviewed and done; README and user docs (`docs/`) written for merging. Next: 2.3 (real NAS/S3
-check still to do, D12).
+**Current:** 1.8 built, awaiting review. Next: 1.9. Real S3 check of 2.3 deferred (bucket permission problem); run
+manual guide §14 when fixed.
 Phase 2 (2.1–2.3) runs before 1.8/1.9.
 Open items: Starlette TestClient warns `httpx` → `httpx2` (harmless); threshold's default value 0 keeps everything.
 Manual test guide: `docs/manual_testing.md` (update it per step). User docs: `README.md`, `docs/*.md` (update with
@@ -126,10 +126,23 @@ Scope: local/NFS files. TIFF (multi-page), PNG, JPG, HDF5. Axes `(Y, X)`, `(T, Y
 - Measured: histogram 70–85 ms per full frame (5 ms cached); tone +5 ms per tile; tone step 0.15–0.35 s per 10 MP
   frame; slider or curve change to new tiles ~0.3–0.4 s. Display and step match exactly at full resolution.
 
-### [ ] 1.8 pipeline save and run
+### [~] 1.8 pipeline save and run
 - Save/load the pipeline. Apply it to the dataset: pick output and format, run as a background job, cancel (D8).
 - Output records provenance (source, pipeline, version, date).
 - Done: a multi-GB dataset processes from the UI, and the saved pipeline reproduces the result from plain Python.
+- Built: io `map_frames` (lazy `MappedDataset`; `iter_frames` reads in order and processes `workers` frames in a
+  thread pool; `Dataset.iter_frames` is the hook), `reference_frames`/`reference_files`, `convert(dtype=)` (integer
+  scaling runs in the mapped source's threads), `write_frames` stages into a hidden `.<name>.pd-xray-writing/` and
+  moves into place on success (cancel/failure leaves nothing; existing file kept until then). `Pipeline.__call__`
+  refuses unresolved references. Server: `GET/POST /api/pipelines` (references inside the dataset folder saved
+  relative), `POST /api/jobs/run` (dtype, value range, frame slice, overwrite; checks before starting; 32 threads),
+  `<output>.pipeline.yaml` + `pd_xray_run` metadata. UI: Load…/Save…/Run… under the steps, `FileDialog`
+  (open/save in allowed folders), run options (format, values, range from the processed view, frames, size
+  estimate), replace prompts, frames/s in the status bar.
+- Measured (idle machine, 112 cores): 99 GB file, median 3 + crop, 1000 frames (19 GB in, 16.4 GB uint16 out)
+  45–50 s from the UI; plain-Python rerun from the pipeline file identical. Threads 1/16/32: 0.9/12.8/17.4 frames/s
+  (uint16 scaling was serial at ~8 frames/s before moving it into the threads). 0042 flat field with relative
+  references: identical from Python. Tiles during a run 71 ms (54 idle). Py3.10 tested.
 
 ### [ ] 1.9 packaging
 - Frontend bundled into `pd-xray-server`. User README. Clean install on a second machine (and the Jetson).
@@ -171,11 +184,24 @@ Done before 1.8/1.9 (user request). Port legacy `src/pd_xray/data/backends/` aft
   More chunks or several SSH connections are not faster (Python-bound). Cancel → resume continued from 940 MB;
   result byte-identical. S3 speed not measured (moto's server caps at ~18 MB/s, boto3's own downloader too).
 
-### [ ] 2.3 Copy to any destination
+### [x] 2.3 Copy to any destination
 - Same `copy` for every pair: local→NAS/S3, NAS↔S3. Remote→remote streams through the server, no temp file. S3
   multipart upload.
 - UI: destination picker over all connections.
 - Done: local→NAS, NAS→S3, S3→local work and pass the integrity check.
+- Built: `Storage.upload(path, size, modified) -> Upload` (`offset`, `part_path`, `write`, `commit`, `discard`,
+  `close`) and `Storage.remove`. Local/SFTP: hidden part file, then rename (SFTP posix-rename, fsync if supported).
+  S3: one request up to 8 MB, else multipart (4 parts in flight, Content-MD5 each, part size grows above 80 GB); a
+  hidden marker object holds the upload id for resume; removing a marker aborts its upload. `copy` lists each
+  destination folder once (skip/conflict/stale parts), stats only same-size files; S3 sources are stat'ed for exact
+  dates (`list_dates_exact`). Size checked after commit, `verify` re-reads the copy; bad copies removed. Copying a
+  folder into itself is refused. CLI destinations can be remote (trailing `/` = into folder). Server:
+  `POST /api/jobs/copy` (`source`/`destination` = {connection or null, path}) replaces `/api/jobs/download`. UI: ⧉ on
+  every row and the path bar; `CopyDialog` browses allowed folders and connections, remembers the last destination.
+- Measured (local OpenSSH + moto server, idle machine): 3 GB local→NAS 330–357 MB/s, NAS→local 400 MB/s; cancel at
+  1 GB → resume sent the remaining 2.2 GB only (NAS and S3), byte-identical. 0042 folder (559 MB) local→NAS→S3→local
+  identical with dates kept; NAS→S3 141 MB/s, NAS→NAS 166 MB/s. Moto upload 130–173 MB/s (moto-bound). Reviewed on the real NAS; real S3 later. UI upload,
+  cancel, resume, into-itself error and download checked in headless Chrome. Py3.10 tested.
 
 ### [ ] 2.4 Open remote datasets (later)
 - io reads remote files lazily (range requests), falling back to download.
@@ -263,3 +289,10 @@ Tomography and 3D views, Zarr/remote-friendly layout, segmentation/dendrite anal
 - 2026-10-25: History scan: no credentials ever committed; one old notebook version (commit 99a1f5b, on main) shows a
   real S3 endpoint/bucket/prefix and a file list (repo is public); user decides on purging. Added data ignore rules
   and nbstripout 0.9.1 (dev env; `.gitattributes`, required filter, install once per clone).
+- 2026-10-26: 2.3: S3 uploads store the source date as object metadata `mtime` (rclone-compatible), so repeated copies
+  skip identical files. Cancelled S3 uploads keep their parts (marker object) for resuming. One "Copy to…" (⧉) for
+  local and remote rows. Tested with local stand-ins (sshd, moto); user checks real NAS/S3 (D12).
+- 2026-10-26: 1.8: runs write float32 by default, or uint16/uint8 scaled from a value range (default: the processed
+  view's Min/Max; clipped; mapping in `value_scaling`). Pipelines save/load as YAML in the allowed folders; every run
+  also writes `<output>.pipeline.yaml` (pipeline + provenance). `pd_xray.io.reference_frames` loads references for
+  Python and the server alike. Outputs go to server folders only (copy to NAS/S3 with ⧉ afterwards).

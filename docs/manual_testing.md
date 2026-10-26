@@ -339,21 +339,82 @@ pd-xray-storage copy sftp://USER@NAS_HOST/volume1/SHARE/REMOTE /tmp/pd_xray_manu
 # progress line with MB/s; Ctrl-C then the same command resumes. S3: s3://BUCKET/KEY (--profile / --endpoint-url)
 ```
 
-Web UI: in a connection, ⤓ next to a file/folder (or in the path bar for the folder shown) → pick a folder inside the
-allowed folders → Download here. Status bar: "1.2 GB/3.4 GB · MB/s · time left", × cancels; downloading again
-resumes. Hover a finished job for what it copied. Change a downloaded file, download again → error asks for
-"Overwrite different files". The dialog reopens in the last folder used.
+Web UI: in a connection, ⧉ next to a file/folder (or in the path bar for the folder shown) → pick a folder inside the
+allowed folders → Copy here. Status bar: "1.2 GB/3.4 GB · MB/s · time left", × cancels; copying again resumes.
+Hover a finished job for what it copied. Change a copied file, copy again → error asks for "Overwrite different
+files". The dialog reopens in the last folder used.
 
 Measured (local OpenSSH, idle machine): 3 GB at 355–370 MB/s (OpenSSH `sftp` 678 MB/s); more parallel chunks or
 connections don't help (Python-bound). Moto's fake S3 is slow (17–19 MB/s, also for boto3 itself): measure real S3.
 
-## 14. Python 3.10 (Jetson-like)
+## 14. Copy anywhere: upload, NAS ↔ S3 (2.3)
+
+Continue from 13 (`nas`, `s3`, `dst` open; LOCAL a local folder of a few GB, e.g. `data/24_I20231030_1/0042`).
+
+```python
+src = LocalStorage("LOCAL_PARENT")
+copy(src, "LOCAL", nas, "pd_xray_test/up")              # upload; again -> skipped=N
+copy(nas, "pd_xray_test/up", s3, "pd_xray_test/up")     # NAS -> S3 (streams, no temp file); again -> skipped=N
+copy(s3, "pd_xray_test/up", dst, "back", verify=True)   # S3 -> local, checksummed=N
+# compare: `diff -r LOCAL OUT/back` prints nothing; `ls -l --time-style=+%s` shows the same dates
+stop = CancelToken()
+copy(src, "BIG_FILE", s3, "pd_xray_test/big", progress=cut, cancel=stop)   # cancel mid-way (file > 500 MB)
+s3.list("pd_xray_test")                                 # hidden ".big.<size>-<time>.pd-xray-part" marker
+copy(src, "BIG_FILE", s3, "pd_xray_test/big")          # resumes (log: "Resuming upload … after N parts")
+copy(nas, "pd_xray_test", nas, "pd_xray_test/inner")    # StorageError: can't copy into itself
+```
+
+```bash
+pd-xray-storage copy LOCAL sftp://USER@NAS_HOST/volume1/SHARE/pd_xray_test/ --password   # trailing /: inside it
+```
+
+Web UI: ⧉ is on every row, local ones too. The dialog lists allowed folders and 🔌 connections; pick a folder in a
+connection → Copy here (upload). Also try NAS → S3 and within one NAS. Hover the finished job: "into nas: /…".
+Check in the Synology/S3 console: files there with the right sizes; no `.pd-xray-part` left after a finished copy.
+Clean up `pd_xray_test` on the NAS and S3 afterwards.
+
+Measured (local OpenSSH + moto server, idle machine, 3 GB slice of the 99 GB file): local → NAS 330–357 MB/s, NAS →
+local 400 MB/s, cancel at 1 GB → resume sent only the remaining 2.2 GB, byte-identical. 0042 folder (26 files,
+559 MB): local → NAS 271 MB/s, NAS → S3 141 MB/s, S3 → local 324 MB/s (verify), NAS → NAS 166 MB/s; identical with
+dates kept. Moto upload 130–173 MB/s (moto-bound): measure real S3.
+
+## 15. Save and run pipelines (1.8)
+
+Web UI, `pd-xray serve --root data`. Open `MG36212_1_0091_narrowfov_000000.h5`, add Median filter (3) and Crop (top
+100, height 2000).
+
+- Save… → opens in `data/`; name `test_pipeline` → `test_pipeline.yaml` (a name with "/" can't be saved: open the
+  folder instead). Save again with the same name: asks to replace. × both steps, Load… → the file → both steps back.
+- Run… → Format TIFF, Values uint16 (Range = the processed Min/Max), Frames 0, 999, 1: "1000 of 5616 frames · output
+  about 16.4 GB". Run. Status bar: `n/1000 · ~20/s · … left`; scrubbing stays smooth meanwhile. Done in ~50 s; hover
+  it: "Wrote 1000 frames … Pipeline: ….pipeline.yaml".
+- Run… again, same name → asks to replace → Run → × after a few seconds: cancelled; the previous output is still
+  there, complete, and no `.….pd-xray-writing` folder is left (`ls -a data`).
+- Format PNG: float32 isn't offered; JPEG: uint8 only.
+- `0042` sequence: flat field with `dar` and three flats + median 3 → Save…: the file says `dark: dar`,
+  `flat: [flat/…]` (relative). Run… into `0042_corrected.h5` (float32): 14 frames, a few seconds, values ~0–3.
+
+Reproduce a run in Python (docs/processing.md, "Reproducing a web app run"), then compare:
+
+```python
+with open_dataset("data/OUT.tif") as a, open_dataset("data/again.tif") as b:
+    print(all(np.array_equal(a[i], b[i]) for i in range(a.shape[0])))     # True
+    print(a.metadata["pd_xray_run"]["pipeline"], a.metadata["value_scaling"])
+```
+
+Delete the test outputs and `test_pipeline.yaml` afterwards.
+
+Measured (idle machine, 112 cores): median 3 + crop on 2304 × 4096 frames, 1000 frames (19 GB in, 16.4 GB uint16
+out) in 45–50 s from the UI, 48 s from Python, identical. Threads: 1 → 0.9 frames/s, 16 → 12.8, 32 → 17.4 (Python,
+300 frames). New-frame tiles during a run 71 ms (54 ms idle).
+
+## 16. Python 3.10 (Jetson-like)
 
 ```bash
 python3 -m venv /tmp/pd310 && /tmp/pd310/bin/pip install ./packages/pd-xray-core "./packages/pd-xray-storage[all]" "./packages/pd-xray-io[all]" ./packages/pd-xray-processing ./packages/pd-xray-server fastapi==0.142.2 uvicorn==0.54.0 websockets==16.1.1 httpx==0.28.1 moto==5.2.4 pytest
 /tmp/pd310/bin/pip list | grep -iE "numpy|h5py|tifffile|pillow|scipy|scikit|yaml|fastapi|uvicorn|websockets"
 # 1.26.4, 3.16.0, 2025.5.10, 12.3.0, 1.15.3, 0.25.2, 6.0.3, 0.142.2, 0.54.0, 16.1.1
-cd /tmp && /tmp/pd310/bin/python -m pytest -q --import-mode=importlib ~/pd_xray/packages   # 86 passed
+cd /tmp && /tmp/pd310/bin/python -m pytest -q --import-mode=importlib ~/pd_xray/packages   # 93 passed
 ```
 
 Cleanup: `rm -rf /tmp/pd_xray_manual /tmp/pd310`.

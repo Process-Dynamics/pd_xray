@@ -77,8 +77,28 @@ Build a chain of steps and see the result on the current frame at full resolutio
 | Flip | Horizontal or vertical mirror |
 | Subtract background (rolling ball) | ImageJ's rolling ball; tick "light background" for bright backgrounds |
 
-Saving the pipeline and running it on the whole dataset come in a later version. In Python, see
-[processing](processing.md).
+### Saving and running
+
+Under the steps:
+
+- **Save…** writes the steps to a `.yaml` file in an allowed folder (default name `<dataset>_pipeline.yaml`).
+  Dark/flat paths inside the dataset's folder are saved relative to it, so the file also works on other scans with
+  the same layout. **Load…** replaces the steps with a saved file's. Saving over a file asks first.
+- **Run…** processes the dataset into a new file, in the background. Choose the folder and name, then:
+  - **Format**: TIFF (multi-page), HDF5, PNG or JPEG (one file per frame).
+  - **Values**: float32 (exact, but 2× the size of uint16 data), or uint16/uint8 scaled from **Range** (filled in
+    with the processed view's Min/Max): Min becomes 0, Max the type's maximum, values outside are clipped. The
+    mapping is saved in the output (`value_scaling`). Leave Range empty to use the data's own min/max (processes
+    everything twice).
+  - **Frames**: from, to (inclusive) and every n-th along the first frame axis. All by default.
+  - The dialog shows the output size. The status bar shows frames done, frames per second and time left; × cancels
+    (a cancelled run leaves no output). An existing output is only replaced after asking, and only once the new
+    one is complete.
+- Next to the output, `<output>.pipeline.yaml` records the pipeline, the source, the output settings, the date and
+  the versions; the output's metadata has the same (`pd_xray_run`). It reproduces the run from Python (see
+  [processing](processing.md#reproducing-a-web-app-run)).
+- Runs write to the allowed folders only; copy the result to a NAS or S3 with ⧉.
+- About 20 frames/s for median 3 + crop on 2304 × 4096 frames (32 threads); the viewer stays responsive.
 
 ## NAS and S3 connections
 
@@ -96,22 +116,24 @@ Saving the pipeline and running it on the whole dataset come in a later version.
 - Connections are private to your browser. Passwords and keys stay in the server's memory only, so after a server
   restart you connect again. The dialog remembers host, bucket etc. (never passwords): click a saved entry to fill
   the form. × next to a connection disconnects it.
-- Opening files directly from a NAS or S3 comes later; for now, download them.
+- Opening files directly from a NAS or S3 comes later; for now, copy them to a server folder.
 
-## Downloading
+## Copying
 
-In a connection, ⤓ next to a file or folder (or next to the path, for the folder you're in) → choose a folder inside
-the allowed folders → "Download here".
+⧉ next to a file or folder (or next to the path, for the folder you're in) → choose the destination folder: one of
+the allowed folders, or a folder in a connection (🔌) → "Copy here". Any direction works: download, upload,
+NAS → S3, within one NAS, … Copies between two connections stream through the server (no temporary files).
 
-- The download runs in the background. The status bar shows size done, speed and time left; × cancels.
-- Downloading the same thing again **resumes**: completed files with the same size and date are skipped, and a
-  partly downloaded file continues where it stopped.
-- A file that already exists with a different size or date stops the download (nothing is overwritten), unless you
+- The copy runs in the background. The status bar shows size done, speed and time left; × cancels.
+- Copying the same thing again **resumes**: completed files with the same size and date are skipped, and a
+  partly copied file continues where it stopped.
+- A file that already exists with a different size or date stops the copy (nothing is overwritten), unless you
   tick "Overwrite different files".
 - Every file's size is checked; files from S3 are also checked against the MD5 that S3 stores (when it has one).
   "Verify (slower)" re-reads both copies and compares SHA-256.
-- Downloaded files keep their original modification date. Partial files are hidden (`.name.….pd-xray-part`) until
-  complete.
+- Copies keep their original modification date (on S3 in the object's `mtime` metadata, as rclone does). Partial
+  files are hidden (`.name.….pd-xray-part`) until complete. On S3 the uploaded parts of a cancelled copy stay
+  (invisible, but using space) until you copy again, which resumes and removes them.
 - Hover a finished job in the status bar to see what it copied.
 
 ## Status bar (bottom)

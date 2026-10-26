@@ -13,6 +13,8 @@ from typing import BinaryIO
 
 from pd_xray.storage.errors import InvalidPathError
 
+PART_SUFFIX = ".pd-xray-part"
+
 
 @dataclass(frozen=True)
 class Entry:
@@ -60,7 +62,13 @@ class Storage(ABC):
 
     Connections open on first use and are reopened once if dropped. Methods are thread-safe. Close the storage (or use
     it as a context manager) to release connections.
+
+    Attributes:
+        list_dates_exact: False when `list` reports a different `modified` than `stat` (S3: the upload time instead of
+            the original time kept in metadata).
     """
+
+    list_dates_exact = True
 
     @property
     @abstractmethod
@@ -108,6 +116,28 @@ class Storage(ABC):
         reader = RangeReader(entry.size or 0, lambda offset, size: self.read_range(entry.path, offset, size), path)
         return io.BufferedReader(reader, 1 << 20)
 
+    @abstractmethod
+    def upload(self, path: str, size: int, modified: float) -> "Upload":
+        """Start writing the file `path` of `size` bytes, or resume an interrupted upload of the same source.
+
+        Partial data is kept under a hidden ".<name>.<size>-<modified>.pd-xray-part" name next to `path` (S3: an
+        unfinished multipart upload marked by an object of that name). Missing parent folders are created. Use
+        `transfer.copy` rather than this directly; it also deletes partial data of older source versions.
+
+        Args:
+            path: The file to write. Replaced on `Upload.commit` if it exists.
+            size: Final size in bytes.
+            modified: Modification time (POSIX timestamp) the finished file gets.
+        """
+
+    @abstractmethod
+    def remove(self, path: str) -> None:
+        """Delete the file at `path`. Deleting partial data (see `upload`) also ends its unfinished S3 upload.
+
+        Raises:
+            FileNotFoundError: If it doesn't exist.
+        """
+
     def md5(self, path: str) -> str | None:
         """MD5 hex digest of the file at `path` if the server already knows it (no reading), else None."""
         return None
@@ -138,6 +168,55 @@ class Storage(ABC):
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}({self.url!r})"
+
+
+def part_name(name: str, size: int, modified: float) -> str:
+    """Hidden name of the partial data while uploading the file `name` (see `Storage.upload`)."""
+    return f".{name}.{size}-{int(modified)}{PART_SUFFIX}"
+
+
+def is_stale_part(item: str, name: str, current: str) -> bool:
+    """Whether `item` (a file name) is partial data of `name` other than `current`, from an older source version."""
+    return item != current and item.startswith(f".{name}.") and item.endswith(PART_SUFFIX)
+
+
+class Upload(ABC):
+    """A file being written by `Storage.upload`. Not thread-safe: one thread writes.
+
+    Nothing appears at the destination path until `commit`. Close without committing to keep the partial data for
+    resuming, or `discard` it.
+
+    Attributes:
+        offset: Bytes already written, by an interrupted earlier upload at first. `write` continues from here.
+        part_path: Storage path of the partial file, readable with `read_range` up to `offset`. None when the partial
+            data can't be read back (S3).
+    """
+
+    offset: int
+    part_path: str | None
+
+    @abstractmethod
+    def write(self, data: bytes) -> None:
+        """Append `data` at `offset`."""
+
+    @abstractmethod
+    def commit(self) -> None:
+        """Finish: the file appears at its path (replacing what was there) with its modification time."""
+
+    @abstractmethod
+    def discard(self) -> None:
+        """Delete the partial data."""
+
+    def close(self) -> None:  # noqa: B027  (optional for backends without open handles)
+        """Release handles, keeping the partial data."""
+
+    def __enter__(self) -> "Upload":
+        return self
+
+    def __exit__(
+        self, exc_type: type[BaseException] | None, exc: BaseException | None, traceback: TracebackType | None
+    ) -> None:
+        self.close()
 
 
 class RangeReader(io.RawIOBase):

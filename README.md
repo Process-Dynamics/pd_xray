@@ -1,8 +1,8 @@
 # pd_xray
 
 X-ray radiography toolkit from the Process Dynamics group. Browse and scrub through large image stacks (HDF5, TIFF,
-PNG, JPG; 100 GB+ files are fine), try ImageJ-style processing live, and download data from a NAS or S3, all in a
-web browser. The same functions are available as Python packages.
+PNG, JPG; 100 GB+ files are fine), try ImageJ-style processing live, run it on whole datasets, and copy data between
+your computer, a NAS and S3, all in a web browser. The same functions are available as Python packages.
 
 ## Quick start (your own computer)
 
@@ -28,10 +28,9 @@ Next time, only the last two lines. Stop the server with Ctrl-C.
    change your data.
 4. **Process**: pick from the "+ Add step…" menu (flat/dark correction, filters, crop, rotate, background
    subtraction, …). The current frame shows the result; press P to compare with the original.
-5. **NAS or S3**: in the left panel's top level, "+ Add connection". Browse it, then ⤓ downloads a file or folder to
-   one of your folders. Progress and Cancel are in the bottom bar; downloading again resumes.
-
-Saving pipelines and running them on the whole dataset come in a later version.
+   **Save…/Load…** keep the steps in a file; **Run…** processes the whole dataset into a new file in the background.
+5. **NAS or S3**: in the left panel's top level, "+ Add connection". ⧉ next to any file or folder copies it to a
+   folder on the server, a NAS or S3. Progress and Cancel are in the bottom bar; copying again resumes.
 
 ## Python
 

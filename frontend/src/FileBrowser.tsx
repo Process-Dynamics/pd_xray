@@ -1,11 +1,11 @@
 // Folder browser within the server's allowed roots and this browser's remote connections (NAS, S3). Opens local
-// files, file sequences and HDF5 datasets.
+// files, file sequences and HDF5 datasets, and copies files and folders anywhere.
 
 import { useCallback, useEffect, useState } from "react";
 
-import { api, type Connection, type Hdf5Dataset, type Listing } from "./api";
+import { api, type Connection, type Hdf5Dataset, type Listing, type Location } from "./api";
 import { ConnectionDialog } from "./ConnectionDialog";
-import { DownloadDialog } from "./DownloadDialog";
+import { CopyDialog } from "./CopyDialog";
 import { formatBytes } from "./format";
 
 export interface OpenRequest {
@@ -30,7 +30,7 @@ export function FileBrowser({ track, onOpen, openPath }: Props) {
   const [connections, setConnections] = useState<Connection[]>([]);
   const [remote, setRemote] = useState<Connection | null>(null); // connection being browsed
   const [adding, setAdding] = useState(false);
-  const [downloading, setDownloading] = useState<{ connection: Connection; path: string; name: string } | null>(null);
+  const [copying, setCopying] = useState<{ source: Location; name: string } | null>(null);
 
   const show = useCallback((result: Listing | undefined, connection: Connection | null) => {
     if (!result) return;
@@ -57,12 +57,14 @@ export function FileBrowser({ track, onOpen, openPath }: Props) {
     else void go(remote ? null : (listing?.parent ?? null));
   };
 
-  const download = async (folder: string, overwrite: boolean, verify: boolean) => {
-    if (!downloading) return;
-    setDownloading(null);
-    const { connection, path, name } = downloading;
-    await track(`Starting download of ${name}`, api.download(connection.id, path, folder, overwrite, verify));
+  const copy = async (destination: Location, overwrite: boolean, verify: boolean) => {
+    if (!copying) return;
+    setCopying(null);
+    await track(`Starting copy of ${copying.name}`, api.copy(copying.source, destination, overwrite, verify));
   };
+  /** Opens the copy dialog for `path` in the folder shown. */
+  const startCopy = (path: string, name: string) =>
+    setCopying({ source: { connection: remote?.id ?? null, path }, name });
 
   const disconnect = async (connection: Connection) => {
     await track(`Disconnecting ${connection.name}`, api.disconnect(connection.id));
@@ -98,14 +100,12 @@ export function FileBrowser({ track, onOpen, openPath }: Props) {
         <span>
           <bdi>{where}</bdi>
         </span>
-        {remote && listing && (
+        {listing && !top && (
           <button
-            onClick={() =>
-              setDownloading({ connection: remote, path: listing.path ?? "", name: name(listing.path || remote.name) })
-            }
-            title="Download this folder"
+            onClick={() => startCopy(listing.path ?? "", name(listing.path || remote!.name))}
+            title="Copy this folder to…"
           >
-            ⤓
+            ⧉
           </button>
         )}
       </div>
@@ -193,18 +193,13 @@ export function FileBrowser({ track, onOpen, openPath }: Props) {
                 <span className="row-meta">{formatBytes(e.size)}</span>
               </button>
             );
-          return remote ? (
+          return (
             <div key={e.path} className="connection-row">
               {row}
-              <button
-                onClick={() => setDownloading({ connection: remote, path: e.path, name: e.name })}
-                title={`Download ${e.name}`}
-              >
-                ⤓
+              <button onClick={() => startCopy(e.path, e.name)} title={`Copy ${e.name} to…`}>
+                ⧉
               </button>
             </div>
-          ) : (
-            row
           );
         })}
         {entries.length > MAX_ROWS && (
@@ -212,11 +207,11 @@ export function FileBrowser({ track, onOpen, openPath }: Props) {
         )}
         {listing && entries.length === 0 && sequences.length === 0 && <div className="muted">Nothing here.</div>}
       </div>
-      {downloading && (
-        <DownloadDialog
-          name={downloading.name}
-          onCancel={() => setDownloading(null)}
-          onDownload={(folder, overwrite, verify) => void download(folder, overwrite, verify)}
+      {copying && (
+        <CopyDialog
+          name={copying.name}
+          onCancel={() => setCopying(null)}
+          onCopy={(destination, overwrite, verify) => void copy(destination, overwrite, verify)}
         />
       )}
       {adding && (

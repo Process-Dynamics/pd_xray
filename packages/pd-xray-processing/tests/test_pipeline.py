@@ -32,6 +32,8 @@ def test_apply_resolves_references_and_skips_disabled() -> None:
     )
     with pytest.raises(PdXrayError, match="Unresolved"):
         apply_pipeline(pipeline, FRAMES)
+    with pytest.raises(PdXrayError, match="Unresolved"):
+        pipeline(FRAMES[0])
     resolved = pipeline.resolve(lambda reference: np.ones((6, 8)))
     with pytest.raises(PdXrayError, match="loaded array"):
         resolved.to_dict()

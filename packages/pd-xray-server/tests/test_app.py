@@ -324,7 +324,7 @@ def test_connections_per_browser(root: Path, monkeypatch: pytest.MonkeyPatch) ->
         assert response.status_code == 400 and response.json()["fingerprint"] == "SHA256:abc"
 
 
-def test_download_job(root: Path) -> None:
+def test_copy_job(root: Path) -> None:
     moto = pytest.importorskip("moto")
     import boto3
 
@@ -336,9 +336,10 @@ def test_download_job(root: Path) -> None:
         s3.put_object(Bucket="lab", Key="scans/sub/b.bin", Body=b"b")
         body = {"kind": "s3", "settings": {"bucket": "lab", "region": "us-east-1"}, "credentials": keys}
         connection = client.post("/api/connections", json=body).json()["id"]
+        bucket = {"connection": connection, "path": "scans"}
 
-        def download(**options: Any) -> dict[str, Any]:
-            job = client.post("/api/jobs/download", json={"connection": connection, "path": "scans", **options})
+        def copy(source: dict[str, Any], destination: dict[str, Any], **options: Any) -> dict[str, Any]:
+            job = client.post("/api/jobs/copy", json={"source": source, "destination": destination, **options})
             assert job.status_code == 200, job.json()
             assert job.json()["unit"] == "bytes"
             for _ in range(200):
@@ -348,14 +349,111 @@ def test_download_job(root: Path) -> None:
                 time.sleep(0.02)
             raise AssertionError("job didn't finish")
 
-        done = download(folder=str(root / "sub"))
+        sub = {"path": str(root / "sub")}
+        done = copy(bucket, sub)  # download
         assert done["state"] == "done" and done["result"]["copied"] == 2 and done["result"]["checksummed"] == 2
+        assert done["result"]["destination"] == str(root / "sub" / "scans")
         assert (root / "sub" / "scans" / "a.bin").read_bytes() == b"a" * 1000
         assert (root / "sub" / "scans" / "sub" / "b.bin").read_bytes() == b"b"
-        assert download(folder=str(root / "sub"))["result"]["skipped"] == 2
+        assert copy(bucket, sub)["result"]["skipped"] == 2
         (root / "sub" / "scans" / "a.bin").write_bytes(b"x")
-        failed = download(folder=str(root / "sub"))
+        failed = copy(bucket, sub)
         assert failed["state"] == "failed" and "overwrite" in failed["error"]
-        assert download(folder=str(root / "sub"), overwrite=True)["result"]["copied"] == 1
-        outside = client.post("/api/jobs/download", json={"connection": connection, "path": "scans", "folder": "/tmp"})
-        assert outside.status_code == 403
+        assert copy(bucket, sub, overwrite=True)["result"]["copied"] == 1
+
+        (root / "sub" / "new.bin").write_bytes(b"new")
+        done = copy({"path": str(root / "sub" / "new.bin")}, bucket)  # upload
+        assert done["state"] == "done" and done["result"]["copied"] == 1
+        assert s3.get_object(Bucket="lab", Key="scans/new.bin")["Body"].read() == b"new"
+        assert copy({"path": str(root / "sub" / "scans")}, {"connection": connection, "path": ""})["result"] == {
+            "copied": 0,  # the downloaded files carry the objects' dates, so they are the same
+            "skipped": 2,
+            "bytes_copied": 0,
+            "checksummed": 0,
+            "destination": "s3://lab/: /scans",
+        }
+
+        request = {"source": bucket, "destination": {"path": "/tmp"}}
+        assert client.post("/api/jobs/copy", json=request).status_code == 403
+        request = {"source": bucket, "destination": {"connection": connection, "path": "scans/a.bin"}}
+        response = client.post("/api/jobs/copy", json=request)
+        assert response.status_code == 400 and "Not a folder" in response.json()["detail"]
+
+
+def run_and_wait(client: TestClient, body: dict[str, Any], cancel_at: int | None = None) -> dict[str, Any]:
+    with client.websocket_connect("/api/events") as ws:
+        response = client.post("/api/jobs/run", json=body)
+        assert response.status_code == 200, response.text
+        job = response.json()
+        while job["state"] not in FINISHED:
+            update = ws.receive_json()["job"]
+            job = update if update["id"] == job["id"] else job  # the socket also replays earlier jobs
+            if cancel_at is not None and job["current"] >= cancel_at:
+                client.post(f"/api/jobs/{job['id']}/cancel")
+    return job
+
+
+def test_pipeline_files_and_run_job(client: TestClient, root: Path) -> None:
+    from pd_xray.io import convert, map_frames, open_dataset, reference_frames
+    from pd_xray.processing import Pipeline, average_frames
+
+    Image.fromarray(np.full((600, 700), 1000, np.uint16)).save(root / "sub" / "dark.tif")
+    info = client.post("/api/datasets", json={"path": str(root / "scan.h5"), "dataset": "images"}).json()
+    steps = [
+        {"op": "flat_field", "params": {"dark": str(root / "sub" / "dark.tif"), "flat": None}},
+        {"op": "crop", "params": {"top": 10, "height": 500}},
+        {"op": "median", "params": {"size": 3}, "enabled": False},
+    ]
+
+    # Save and load: references inside the dataset's folder are stored relative (D10).
+    saved = client.post("/api/pipelines", json={"path": str(root / "p.yaml"), "steps": steps, "dataset_id": info["id"]})
+    assert saved.status_code == 200
+    assert "dark: sub/dark.tif" in (root / "p.yaml").read_text()
+    again = client.post("/api/pipelines", json={"path": str(root / "p.yaml"), "steps": steps})
+    assert again.status_code == 409
+    loaded = client.get("/api/pipelines", params={"path": str(root / "p.yaml")}).json()
+    assert loaded["steps"][0]["params"]["dark"] == "sub/dark.tif" and loaded["steps"][2]["enabled"] is False
+    assert client.post("/api/pipelines", json={"path": str(root / "p.txt"), "steps": steps}).status_code == 400
+
+    # Run with the loaded (relative) steps; the job writes the output and its pipeline file.
+    body = {"dataset_id": info["id"], "steps": loaded["steps"], "destination": str(root / "out" / "x.tif")}
+    assert client.post("/api/jobs/run", json=body).status_code == 400  # no such folder
+    body["destination"] = str(root / "sub" / "out.tif")
+    job = run_and_wait(client, body)
+    assert job["state"] == "done", job["error"]
+    assert job["result"]["frames"] == 3 and job["current"] == job["total"] == 3
+    expected = DATA[:, 10:510].astype(np.float32) - 1000  # no flat: frame - dark
+    with open_dataset(root / "sub" / "out.tif") as out:
+        assert out.dtype == np.float32
+        np.testing.assert_allclose(out[...], expected, rtol=1e-6)
+        assert out.metadata["pd_xray_run"]["source"] == str(root / "scan.h5")
+
+    # The pipeline file next to the output reproduces it from plain Python.
+    pipeline = Pipeline.load(root / "sub" / "out.tif.pipeline.yaml")
+    with open_dataset(root / "scan.h5", dataset="images") as ds:
+        resolved = pipeline.resolve(lambda ref: average_frames(reference_frames(ref, base=root)))
+        convert(map_frames(ds, resolved, workers=2), root / "again.tif")
+    with open_dataset(root / "again.tif") as a, open_dataset(root / "sub" / "out.tif") as b:
+        np.testing.assert_array_equal(a[...], b[...])
+
+    # Existing output: refused unless overwrite. Integer output scales from the value range.
+    assert client.post("/api/jobs/run", json=body).status_code == 409
+    scaled = {**body, "dtype": "uint8", "value_range": [0, 10_000], "frames": [1, None, None], "overwrite": True}
+    job = run_and_wait(client, scaled)
+    assert job["state"] == "done", job["error"]
+    with open_dataset(root / "sub" / "out.tif") as out:
+        assert (out.dtype, out.shape) == (np.uint8, (2, 500, 700))
+        scaled_values = expected[1:].astype(np.float64) / (10_000 / 255)  # as convert computes it
+        np.testing.assert_array_equal(out[...], np.rint(np.clip(scaled_values, 0, 255)))
+    bad = client.post("/api/jobs/run", json={**body, "destination": str(root / "o.png"), "dtype": "float32"})
+    assert bad.status_code == 400 and "can't store" in bad.json()["detail"]
+
+    # A cancelled run leaves no output (D8).
+    slow = [{"op": "median", "params": {"size": 25}}]
+    many = np.zeros((40, 600, 700), np.uint16)
+    with h5py.File(root / "many.h5", "w") as f:
+        f["images"] = many
+    info = client.post("/api/datasets", json={"path": str(root / "many.h5")}).json()
+    job = run_and_wait(client, {"dataset_id": info["id"], "steps": slow, "destination": str(root / "c.h5")}, 2)
+    assert job["state"] == "cancelled"
+    assert not [p.name for p in root.iterdir() if p.name.startswith(("c.h5", ".c.h5"))]

@@ -1,33 +1,39 @@
-"""Copying files and folders between storages: parallel, resumable, with progress, cancel and integrity checks.
+"""Copying files and folders between any two storages: parallel, resumable, with progress, cancel and integrity checks.
 
-Each file downloads into a hidden ".<name>.<size>-<mtime>.pd-xray-part" file next to the target, which is renamed
-when complete and checked. A cancelled or failed copy keeps its part files, so running it again resumes them. The
-size and modification time in the part name make a changed source start afresh.
+Each file is written through `Storage.upload`: into hidden partial data that becomes the file when complete. A
+cancelled or failed copy keeps its partial data, so running it again resumes. Remote-to-remote copies stream through
+this machine without temporary files.
 """
 
-import glob
 import hashlib
 import logging
-import os
 import threading
 from collections import deque
 from collections.abc import Callable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from pathlib import Path
 
 from pd_xray.core import CancelToken, OperationCancelledError, Progress, ProgressCallback
-from pd_xray.storage.base import Entry, Storage, join_path, normalise_path
+from pd_xray.storage.base import (
+    PART_SUFFIX,
+    Entry,
+    Storage,
+    is_stale_part,
+    join_path,
+    normalise_path,
+    part_name,
+)
 from pd_xray.storage.errors import StorageError
-from pd_xray.storage.local import LocalStorage
 
 logger = logging.getLogger(__name__)
 
 CHUNK_BYTES = 8 << 20
 """Bytes per read request."""
 PARALLEL_CHUNKS = 4
-"""Read requests in flight per file. With `workers` files at once, memory use is about workers * 4 * 8 MB."""
-PART_SUFFIX = ".pd-xray-part"
+"""Read requests in flight per file. With `workers` files at once, memory use is about workers * 4 * 8 MB (plus
+`s3.PARALLEL_PARTS` parts per file when writing to S3)."""
+PARALLEL_STATS = 16
+"""Destination folders listed, or files checked, at once while planning."""
 
 
 class IntegrityError(StorageError):
@@ -42,7 +48,7 @@ class CopyResult:
         copied: Files copied (including resumed ones).
         skipped: Files skipped because an identical copy (same size and modification time) was already there.
         bytes_copied: Bytes transferred, excluding skipped files and resumed parts.
-        checksummed: Copied files whose checksum was compared (S3 MD5, or SHA-256 with `verify`).
+        checksummed: Copied files whose checksum was compared (source MD5 from S3, or SHA-256 with `verify`).
     """
 
     copied: int
@@ -66,20 +72,20 @@ def copy(
     """Copy a file, or a folder with everything below it, to `destination_path` (the path of the copy itself).
 
     Files that are already at the destination with the same size and modification time are skipped, so running a copy
-    again only fetches what is missing. Copies keep the source's modification time. Every copy's size is checked; its
+    again only copies what is missing. Copies keep the source's modification time. Every copy's size is checked; its
     MD5 too when the source knows it without reading (S3 single-part uploads). `verify` reads both copies again and
     compares SHA-256, which roughly doubles the time.
 
     Args:
         source: Where to copy from.
         source_path: File or folder in `source`.
-        destination: Where to copy to. Only `LocalStorage` for now.
+        destination: Where to copy to. May be the same storage as `source`.
         destination_path: Path of the copied file or folder in `destination`.
         overwrite: Replace destination files that differ. Otherwise they stop the copy before anything is copied.
         verify: Compare SHA-256 of source and copy after copying.
         workers: Files copied at once.
         progress: Called with bytes done/total; `message` is the file being copied.
-        cancel: Stops the copy between chunks. Part files are kept for resuming.
+        cancel: Stops the copy between chunks. Partial data is kept for resuming.
 
     Raises:
         FileNotFoundError: If `source_path` doesn't exist.
@@ -87,8 +93,10 @@ def copy(
         IntegrityError: If a copy doesn't match its source.
         OperationCancelledError: If cancelled.
     """
-    if not isinstance(destination, LocalStorage):
-        raise StorageError(f"Copying to {destination.url} isn't supported yet; copy to a local folder.")
+    source_path, destination_path = normalise_path(source_path), normalise_path(destination_path)
+    inside = destination_path.startswith(f"{source_path}/".lstrip("/")) and destination_path != source_path
+    if source.url == destination.url and inside:
+        raise StorageError(f"Can't copy {source_path or 'the root'!r} into itself ({destination_path!r}).")
     stop = CancelToken()  # set when one file fails, so the others stop too
 
     def check() -> None:
@@ -99,24 +107,8 @@ def copy(
 
     if progress is not None:
         progress(Progress(0, None, "Listing files"))
-    todo, skipped, conflicts = [], 0, []
-    for entry, target_path in _plan(source, normalise_path(source_path), normalise_path(destination_path), check):
-        target = destination.full_path(target_path)
-        if not target.exists():
-            todo.append((entry, target))
-        elif target.is_dir():
-            raise FileExistsError(f"Can't copy file {entry.path!r} over the folder {target}.")
-        elif _identical(entry, target):
-            skipped += 1
-        elif overwrite:
-            todo.append((entry, target))
-        else:
-            conflicts.append(target)
-    if conflicts:
-        raise FileExistsError(
-            f"{len(conflicts)} file(s) already exist with different size or date, e.g. {conflicts[0]}. Choose "
-            "overwrite to replace them."
-        )
+    plan = _plan(source, source_path, destination_path, check)
+    todo, skipped = _compare(plan, destination, overwrite, check)
 
     total = sum(entry.size or 0 for entry, _ in todo)
     done, transferred, checksummed = 0, 0, 0
@@ -134,7 +126,9 @@ def copy(
     if progress is not None:
         progress(Progress(0, total, f"{len(todo)} files"))
     with ThreadPoolExecutor(max(1, workers), thread_name_prefix="copy") as pool:
-        futures = [pool.submit(_copy_file, source, entry, target, verify, report, check) for entry, target in todo]
+        futures = [
+            pool.submit(_copy_file, source, entry, destination, target, verify, report, check) for entry, target in todo
+        ]
         try:
             for future in as_completed(futures):
                 checksummed += future.result()
@@ -148,7 +142,7 @@ def copy(
 def _plan(
     source: Storage, source_path: str, destination_path: str, check: Callable[[], None]
 ) -> list[tuple[Entry, str]]:
-    """(source file, destination path) for every file to copy."""
+    """(source file, destination path) for every file to copy, with exact dates."""
     entry = source.stat(source_path)
     if not entry.is_dir:
         return [(entry, destination_path)]
@@ -162,62 +156,114 @@ def _plan(
                 folders.append((item.path, join_path(target, item.name)))
             elif not item.name.endswith(PART_SUFFIX):
                 files.append((item, join_path(target, item.name)))
+    if not source.list_dates_exact:
+        with ThreadPoolExecutor(PARALLEL_STATS, thread_name_prefix="plan") as pool:
+            entries = list(pool.map(source.stat, [entry.path for entry, _ in files]))
+        files = [(entry, target) for entry, (_, target) in zip(entries, files, strict=True)]
     return files
 
 
-def _identical(entry: Entry, target: Path) -> bool:
-    result = target.stat()
-    return entry.modified is not None and result.st_size == entry.size and int(result.st_mtime) == int(entry.modified)
+def _compare(
+    plan: list[tuple[Entry, str]], destination: Storage, overwrite: bool, check: Callable[[], None]
+) -> tuple[list[tuple[Entry, str]], int]:
+    """The planned files that need copying, and how many are skipped as identical. Lists each destination folder once
+    and deletes partial data of older source versions.
+
+    Raises:
+        FileExistsError: For differing files without `overwrite`, or a folder in the way.
+    """
+
+    def listing(folder: str) -> list[Entry]:
+        check()
+        try:
+            return destination.list(folder)
+        except FileNotFoundError:
+            return []
+
+    folders = sorted({target.rpartition("/")[0] for _, target in plan})
+    with ThreadPoolExecutor(PARALLEL_STATS, thread_name_prefix="plan") as pool:
+        listings = dict(zip(folders, pool.map(listing, folders), strict=True))
+    existing = {item.path: item for items in listings.values() for item in items}
+    parts = {folder: [item for item in items if item.name.endswith(PART_SUFFIX)] for folder, items in listings.items()}
+
+    todo, maybe_same, conflicts, stale = [], [], [], []
+    for entry, target in plan:
+        folder, _, name = target.rpartition("/")
+        current = part_name(name, entry.size or 0, entry.modified or 0.0)
+        stale += [item.path for item in parts[folder] if is_stale_part(item.name, name, current)]
+        there = existing.get(target)
+        if there is None:
+            todo.append((entry, target))
+        elif there.is_dir:
+            raise FileExistsError(f"Can't copy file {entry.path!r} over the folder {target!r} in {destination.url}.")
+        elif there.size == entry.size and entry.modified is not None:
+            maybe_same.append((entry, target))
+        elif overwrite:
+            todo.append((entry, target))
+        else:
+            conflicts.append(target)
+
+    with ThreadPoolExecutor(PARALLEL_STATS, thread_name_prefix="plan") as pool:  # S3 keeps dates in metadata: stat
+        stats = list(pool.map(lambda pair: destination.stat(pair[1]), maybe_same))
+    skipped = 0
+    for (entry, target), there in zip(maybe_same, stats, strict=True):
+        if there.modified is not None and int(there.modified) == int(entry.modified or 0):
+            skipped += 1
+        elif overwrite:
+            todo.append((entry, target))
+        else:
+            conflicts.append(target)
+    if conflicts:
+        raise FileExistsError(
+            f"{len(conflicts)} file(s) already exist with different size or date, e.g. {conflicts[0]!r} in "
+            f"{destination.url}. Choose overwrite to replace them."
+        )
+    for path in stale:
+        destination.remove(path)  # from an older version of the source
+    return todo, skipped
 
 
 def _copy_file(
     source: Storage,
     entry: Entry,
-    target: Path,
+    destination: Storage,
+    target: str,
     verify: bool,
     report: Callable[..., None],
     check: Callable[[], None],
 ) -> int:
-    """Copy one file through its part file. Returns 1 if a checksum was compared, else 0."""
+    """Copy one file through `Storage.upload`. Returns 1 if a checksum was compared, else 0."""
     size, mtime = entry.size or 0, entry.modified or 0.0
-    target.parent.mkdir(parents=True, exist_ok=True)
-    part = target.with_name(f".{target.name}.{size}-{int(mtime)}{PART_SUFFIX}")
-    for stale in target.parent.glob(f".{glob.escape(target.name)}.*{PART_SUFFIX}"):
-        if stale != part:
-            stale.unlink()  # from an older version of the source
     expected_md5 = source.md5(entry.path)
     md5 = hashlib.md5() if expected_md5 else None
-    start = part.stat().st_size if part.exists() else 0
-    if start > size:
-        start = 0
-    with part.open("r+b" if start else "wb") as out:
-        if md5 is not None and start:
-            for block in iter(lambda: out.read(CHUNK_BYTES), b""):  # the part so far (start == its size)
-                md5.update(block)
-        out.seek(start)
-        out.truncate()
+    with destination.upload(target, size, mtime) as upload:
+        start = upload.offset
         if start:
             logger.info("Resuming %s at %d of %d bytes", entry.path, start, size)
+            if md5 is not None and upload.part_path is None:
+                md5 = None  # S3 parts can't be read back; S3 checked each with Content-MD5
+            elif md5 is not None and upload.part_path is not None:
+                for data in _chunks(destination, upload.part_path, 0, start, check):
+                    md5.update(data)
             report(entry, start, resumed=True)
         for data in _chunks(source, entry.path, start, size, check):
-            out.write(data)
+            upload.write(data)
             if md5 is not None:
                 md5.update(data)
             report(entry, len(data))
-        out.flush()
-        os.fsync(out.fileno())
-    try:
-        if part.stat().st_size != size:
-            raise IntegrityError(f"{entry.path}: copied {part.stat().st_size} bytes, expected {size}.")
         if md5 is not None and md5.hexdigest() != expected_md5:
+            upload.discard()
             raise IntegrityError(f"{entry.path}: MD5 of the copy doesn't match the source. Copy it again.")
-        if verify and _sha256_source(source, entry, check) != _sha256_file(part):
+        upload.commit()
+    try:
+        copied = destination.stat(target).size
+        if copied != size:
+            raise IntegrityError(f"{entry.path}: copied {copied} bytes, expected {size}.")
+        if verify and _sha256(source, entry.path, size, check) != _sha256(destination, target, size, check):
             raise IntegrityError(f"{entry.path}: SHA-256 of the copy doesn't match the source. Copy it again.")
     except IntegrityError:
-        part.unlink()
+        destination.remove(target)
         raise
-    os.utime(part, (mtime, mtime))
-    os.replace(part, target)
     return int(md5 is not None or verify)
 
 
@@ -241,16 +287,8 @@ def _chunks(source: Storage, path: str, start: int, size: int, check: Callable[[
             yield data
 
 
-def _sha256_source(source: Storage, entry: Entry, check: Callable[[], None]) -> str:
+def _sha256(storage: Storage, path: str, size: int, check: Callable[[], None]) -> str:
     digest = hashlib.sha256()
-    for data in _chunks(source, entry.path, 0, entry.size or 0, check):
+    for data in _chunks(storage, path, 0, size, check):
         digest.update(data)
-    return digest.hexdigest()
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as file:
-        for block in iter(lambda: file.read(CHUNK_BYTES), b""):
-            digest.update(block)
     return digest.hexdigest()

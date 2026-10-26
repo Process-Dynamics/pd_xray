@@ -72,8 +72,8 @@ def test_errors(bucket: None) -> None:
         S3Storage("lab", profile="no-such-profile")
 
 
-def test_md5_and_copy(bucket: None, tmp_path: Path) -> None:
-    from pd_xray.storage import LocalStorage, StorageError, copy
+def test_md5_and_download(bucket: None, tmp_path: Path) -> None:
+    from pd_xray.storage import LocalStorage, copy
 
     with S3Storage("lab", **KEYS) as storage:
         assert storage.md5("scans/0042/b.bin") == hashlib.md5(b"xy").hexdigest()
@@ -81,5 +81,50 @@ def test_md5_and_copy(bucket: None, tmp_path: Path) -> None:
         assert (result.copied, result.checksummed) == (2, 2)  # the folder marker isn't a file
         assert (tmp_path / "scans" / "0042" / "a.bin").read_bytes() == bytes(range(256)) * 4096
         assert copy(storage, "scans", LocalStorage(tmp_path), "scans").skipped == 2
-        with pytest.raises(StorageError, match="isn't supported yet"):
-            copy(LocalStorage(tmp_path), "scans", storage, "back")
+
+
+def test_upload_cancel_resume(bucket: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import os
+
+    from pd_xray.core import CancelToken, OperationCancelledError, Progress
+    from pd_xray.storage import LocalStorage, copy, s3, transfer
+
+    monkeypatch.setattr(transfer, "CHUNK_BYTES", 1000)
+    monkeypatch.setattr(s3, "MIN_PART_BYTES", 2000)  # 10 240 bytes -> 6 parts
+    monkeypatch.setattr(moto.s3.models, "S3_UPLOAD_PART_MIN_SIZE", 1)
+    data = bytes(range(256)) * 40
+    (tmp_path / "scan").mkdir()
+    (tmp_path / "scan" / "a.bin").write_bytes(data)
+    (tmp_path / "scan" / "small.bin").write_bytes(b"small")  # one request, no multipart
+    os.utime(tmp_path / "scan" / "a.bin", (1_700_000_000, 1_700_000_000))
+    local = LocalStorage(tmp_path)
+    stop = CancelToken()
+
+    def cancel_after_some(update: Progress) -> None:
+        if update.current >= 7000:
+            stop.cancel()
+
+    with S3Storage("lab", **KEYS) as storage:
+        client = storage._client
+        storage.upload("up/scan/.a.bin.99-1.pd-xray-part", 99, 1).commit()  # placeholder object
+        old = client.create_multipart_upload(Bucket="lab", Key="up/scan/a.bin")["UploadId"]
+        client.put_object(Bucket="lab", Key="up/scan/.a.bin.99-1.pd-xray-part", Body=old.encode())  # older version
+        with pytest.raises(OperationCancelledError):
+            copy(local, "scan/a.bin", storage, "up/scan/a.bin", progress=cancel_after_some, cancel=stop)
+        assert not storage.exists("up/scan/a.bin") and not storage.exists("up/scan/.a.bin.99-1.pd-xray-part")
+        [upload] = client.list_multipart_uploads(Bucket="lab")["Uploads"]  # the older one was ended
+        assert upload["UploadId"] != old
+
+        result = copy(local, "scan", storage, "up/scan")
+        assert result.copied == 2 and result.bytes_copied < len(data) + 5  # resumed
+        assert client.get_object(Bucket="lab", Key="up/scan/a.bin")["Body"].read() == data
+        assert storage.stat("up/scan/a.bin").modified == 1_700_000_000
+        assert "Uploads" not in client.list_multipart_uploads(Bucket="lab")
+        assert sorted(e.name for e in storage.list("up/scan")) == ["a.bin", "small.bin"]  # marker gone
+        assert copy(local, "scan", storage, "up/scan").skipped == 2
+
+        result = copy(storage, "up", storage, "copied", verify=True)  # S3 -> S3
+        assert (result.copied, result.checksummed) == (2, 2)
+        assert copy(storage, "copied/scan", local, "back", verify=True).copied == 2
+        assert (tmp_path / "back" / "a.bin").read_bytes() == data
+        assert int((tmp_path / "back" / "a.bin").stat().st_mtime) == 1_700_000_000

@@ -17,7 +17,8 @@ import { DisplayPanel } from "./DisplayPanel";
 import { connectJobEvents } from "./events";
 import { FileBrowser, type OpenRequest } from "./FileBrowser";
 import { FrameSlider } from "./FrameSlider";
-import { type EditableStep, newStep, ProcessingPanel } from "./ProcessingPanel";
+import { PipelineActions } from "./PipelineActions";
+import { type EditableStep, editableStep, newStep, ProcessingPanel } from "./ProcessingPanel";
 import { clampFrame } from "./scheduling";
 import { StatusBar } from "./StatusBar";
 import { type View, Viewer } from "./Viewer";
@@ -240,6 +241,17 @@ export function App() {
       ? dataset.path
       : dataset.path.slice(0, dataset.path.lastIndexOf("/")) || "/"
     : "";
+  // Defaults for a run: the processed frame size, and the processed view's contrast (or the preview's automatic one).
+  const lastPreview = currentPreview ?? preview?.result;
+  const processedDefaults = lastPreview
+    ? {
+        height: lastPreview.height,
+        width: lastPreview.width,
+        ...(processing
+          ? { vmin: activeDisplay.vmin, vmax: activeDisplay.vmax }
+          : { vmin: lastPreview.stats.low, vmax: lastPreview.stats.high }),
+      }
+    : null;
   const busy = [...tasks.map((t) => t.label), ...(viewerLoading ? [viewerLoading] : [])];
   const visibleJobs = Object.values(jobs).filter(
     (j) => j.state === "queued" || j.state === "running" || recentJobs.has(j.id),
@@ -301,6 +313,17 @@ export function App() {
                   if (next.some((s) => s.enabled) && !steps.some((s) => s.enabled)) setShowProcessed(true);
                 }}
                 onShowProcessed={setShowProcessed}
+              />
+              <PipelineActions
+                dataset={dataset}
+                datasetFolder={datasetFolder}
+                steps={apiSteps}
+                processed={processedDefaults}
+                onLoaded={(loaded) => {
+                  setSteps(loaded.map(editableStep));
+                  setShowProcessed(loaded.some((s) => s.enabled));
+                }}
+                onJob={(job) => setJobs((all) => ({ ...all, [job.id]: job }))}
               />
             </DisplayPanel>
           </div>

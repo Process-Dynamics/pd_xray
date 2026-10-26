@@ -49,7 +49,11 @@ class _Sftp:
         self.port = self.server.sockets[0].getsockname()[1]
 
     def stop(self) -> None:
-        self.server.close()
+        async def close() -> None:  # on the server's own loop: closing from another thread races with it
+            self.server.close()
+            await self.server.wait_closed()
+
+        asyncio.run_coroutine_threadsafe(close(), self.loop).result()
         self.loop.call_soon_threadsafe(self.loop.stop)
         self.thread.join()
 
@@ -130,3 +134,45 @@ def test_copy_folder(server: _Sftp, tmp_path_factory: pytest.TempPathFactory) ->
         result = copy(storage, "scans", LocalStorage(destination), "scans", verify=True)
         assert (result.copied, result.checksummed) == (1, 1)
         assert (destination / "scans" / "0042" / "a.bin").read_bytes() == bytes(range(256)) * 4096
+
+
+def test_upload_cancel_resume(
+    server: _Sftp, tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    from pd_xray.core import CancelToken, OperationCancelledError, Progress
+    from pd_xray.storage import LocalStorage, StorageError, copy, transfer
+
+    monkeypatch.setattr(transfer, "CHUNK_BYTES", 256 << 10)
+    local_root = tmp_path_factory.mktemp("local")
+    (local_root / "scan").mkdir()
+    data = os.urandom(3 << 20)
+    (local_root / "scan" / "a.bin").write_bytes(data)
+    os.utime(local_root / "scan" / "a.bin", (1_700_000_000, 1_700_000_000))
+    local, stop = LocalStorage(local_root), CancelToken()
+
+    def cancel_after_some(update: Progress) -> None:
+        if update.current >= 1 << 20:
+            stop.cancel()
+
+    uploaded = server.root / "up" / "scan"
+    with _storage(server) as storage:
+        with pytest.raises(OperationCancelledError):
+            copy(local, "scan", storage, "up/scan", progress=cancel_after_some, cancel=stop)
+        [part] = uploaded.glob(".a.bin.*.pd-xray-part")
+        kept = part.stat().st_size
+        assert 1 << 20 <= kept < len(data) and not (uploaded / "a.bin").exists()
+        (uploaded / ".a.bin.5-1.pd-xray-part").write_bytes(b"stale")
+
+        result = copy(local, "scan", storage, "up/scan", verify=True)
+        assert (result.copied, result.checksummed, result.bytes_copied) == (1, 1, len(data) - kept)
+        assert (uploaded / "a.bin").read_bytes() == data
+        assert int((uploaded / "a.bin").stat().st_mtime) == 1_700_000_000
+        assert sorted(p.name for p in uploaded.iterdir()) == ["a.bin"]
+        assert copy(local, "scan", storage, "up/scan").skipped == 1
+
+        assert copy(storage, "up", storage, "copied").copied == 1  # NAS -> NAS
+        assert (server.root / "copied" / "scan" / "a.bin").read_bytes() == data
+        with pytest.raises(StorageError, match="into itself"):
+            copy(storage, "up", storage, "up/inner")

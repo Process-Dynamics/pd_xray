@@ -78,8 +78,11 @@ class Pipeline:
             cancel: Optional cancel token, checked before each step.
 
         Raises:
+            PdXrayError: If references are unresolved (call `resolve` first).
             OperationCancelledError: If `cancel` is cancelled.
         """
+        if self.references:
+            raise PdXrayError(f"Unresolved references {sorted(self.references)}; call Pipeline.resolve() first.")
         result: Frame = np.array(frame, dtype=np.float32)
         enabled = [step for step in self.steps if step.enabled]
         for done, step in enumerate(enabled):
@@ -179,6 +182,9 @@ def apply_pipeline(
     cancel: CancelToken | None = None,
 ) -> Iterator[Frame]:
     """Lazily process frames one at a time (constant memory). Pass the result to `pd_xray.io.write_frames`.
+
+    To process a whole dataset into a file, `pd_xray.io.convert(pd_xray.io.map_frames(dataset, pipeline), path)` is
+    simpler, and processes several frames at once with `workers`.
 
     Args:
         pipeline: Resolved pipeline (no reference strings left).

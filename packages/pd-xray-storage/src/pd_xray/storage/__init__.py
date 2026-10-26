@@ -4,7 +4,7 @@
 copies files and folders between them.
 """
 
-from pd_xray.storage.base import Entry, Storage, join_path, normalise_path
+from pd_xray.storage.base import Entry, Storage, Upload, join_path, normalise_path
 from pd_xray.storage.errors import (
     AuthenticationError,
     HostKeyError,
@@ -30,6 +30,7 @@ __all__ = [
     "Storage",
     "StorageConnectionError",
     "StorageError",
+    "Upload",
     "copy",
     "join_path",
     "normalise_path",

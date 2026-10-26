@@ -1,47 +1,28 @@
-"""Reference frames for pipelines (e.g. darks and flats): a folder or a list of files, averaged into one frame."""
+"""Reference frames for pipelines (e.g. darks and flats), limited to the allowed folders, and their saved form."""
 
-from collections.abc import Iterator, Sequence
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 from numpy.typing import NDArray
 
-from pd_xray.core import CancelToken, PdXrayError
-from pd_xray.io import iter_frames, open_dataset, supported_extensions
-from pd_xray.io.sequence import natural_key
-from pd_xray.processing import average_frames
+from pd_xray.core import CancelToken
+from pd_xray.io import reference_files as named_files
+from pd_xray.io import reference_frames
+from pd_xray.processing import OPERATIONS, Pipeline, Step, average_frames
 from pd_xray.processing.pipeline import Reference
 from pd_xray.server.paths import resolve_path
 
 
 def reference_files(reference: Reference, base: Path, roots: Sequence[Path]) -> list[Path]:
-    """The files a reference names. Each entry is a file or a folder (all openable files directly inside it).
-
-    Args:
-        reference: One path or several. Relative paths are relative to `base` (the dataset's folder).
-        base: Folder for relative paths.
-        roots: Allowed folders.
+    """The files a reference names (see `pd_xray.io.reference_files`), each entry checked to lie inside the roots.
 
     Raises:
         AccessDeniedError: For a path outside the roots.
         PdXrayError: If a path doesn't exist or a folder has no openable files.
     """
-    extensions = set(supported_extensions())
-    files: list[Path] = []
-    for entry in (reference,) if isinstance(reference, str) else reference:
-        path = resolve_path(base / entry, roots)  # an absolute `entry` replaces `base`
-        if path.is_dir():
-            found = sorted(
-                (p for p in path.iterdir() if p.is_file() and p.suffix.lower() in extensions), key=natural_key
-            )
-            if not found:
-                raise PdXrayError(f"Folder '{path}' has no image files to use as a reference.")
-            files.extend(found)
-        elif path.is_file():
-            files.append(path)
-        else:
-            raise PdXrayError(f"Reference '{entry}' doesn't exist (looked for {path}).")
-    return files
+    entries = (reference,) if isinstance(reference, str) else reference
+    return named_files([str(resolve_path(base / entry, roots)) for entry in entries])  # absolute entries replace base
 
 
 def average_files(files: Sequence[Path], cancel: CancelToken | None = None) -> NDArray[Any]:
@@ -50,15 +31,23 @@ def average_files(files: Sequence[Path], cancel: CancelToken | None = None) -> N
     Raises:
         PdXrayError: If a file can't be opened or frames differ in shape.
     """
+    return average_frames(reference_frames([str(f) for f in files]), cancel=cancel)
 
-    def frames() -> Iterator[NDArray[Any]]:
-        shape = None
-        for path in files:
-            with open_dataset(path) as dataset:
-                for frame in iter_frames(dataset):
-                    if shape is not None and frame.shape != shape:
-                        raise PdXrayError(f"{path.name} has {frame.shape} frames, but earlier files have {shape}.")
-                    shape = frame.shape
-                    yield frame
 
-    return average_frames(frames(), cancel=cancel)
+def relative_references(pipeline: Pipeline, base: Path) -> Pipeline:
+    """A copy with references inside `base` (the dataset's folder) made relative to it, so the saved pipeline also
+    works on other scans with the same layout. Others stay absolute (D10)."""
+
+    def relative(path: str) -> str:
+        absolute = base / path  # an absolute `path` replaces base
+        return absolute.relative_to(base).as_posix() if absolute.is_relative_to(base) else path
+
+    def swap(step: Step) -> Step:
+        params = dict(step.params)
+        for param in OPERATIONS[step.op].params:
+            value = params[param.name]
+            if param.kind == "reference" and value is not None:
+                params[param.name] = relative(value) if isinstance(value, str) else [relative(v) for v in value]
+        return Step(step.op, params, step.enabled)
+
+    return Pipeline(swap(step) for step in pipeline.steps)

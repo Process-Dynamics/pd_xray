@@ -2,6 +2,7 @@
 
 import logging
 import math
+import threading
 from collections.abc import Iterator, Sequence
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,7 @@ from numpy.typing import NDArray
 
 from pd_xray.core import CancelToken, PdXrayError, ProgressCallback, frame_axes, track
 from pd_xray.io.dataset import Dataset, split_key
+from pd_xray.io.mapped import MappedDataset
 from pd_xray.io.writers import frame_layout, supports, write_frames
 
 logger = logging.getLogger(__name__)
@@ -23,13 +25,7 @@ def iter_frames(dataset: Dataset, first: Sequence[int] | None = None) -> Iterato
         dataset: Source dataset.
         first: Indices along the first axis to include. All by default. Ignored for single-frame datasets.
     """
-    n_frame_axes = len(frame_axes(dataset.axes))
-    if n_frame_axes == 0:
-        yield dataset[...]
-        return
-    for i in range(dataset.shape[0]) if first is None else first:
-        for rest in np.ndindex(*dataset.shape[1:n_frame_axes]):
-            yield dataset[(i,) + rest]
+    return dataset.iter_frames(first)
 
 
 def compute_value_range(
@@ -57,6 +53,7 @@ def convert(
     value_range: tuple[float, float] | None = None,
     progress: ProgressCallback | None = None,
     cancel: CancelToken | None = None,
+    dtype: Any = None,
     **options: Any,
 ) -> Path:
     """Write `source` (or some of its frames) to `destination`; the extension picks the format.
@@ -64,7 +61,8 @@ def convert(
     Values are copied exactly when the format can store the dtype (TIFF/HDF5 always; PNG for uint8/uint16).
     Otherwise (e.g. float32 -> PNG, uint16 -> JPG) values are scaled linearly to the format's integer range using one
     range for all frames, so the histogram's shape is kept, and the mapping is stored in
-    `metadata["value_scaling"]`: original ≈ offset + pixel * scale. JPG is lossy in any case.
+    `metadata["value_scaling"]`: original ≈ offset + pixel * scale. JPG is lossy in any case. `dtype` chooses the
+    output type instead: floats are exact casts, integers other than the source's are scaled as above.
 
     Args:
         source: Dataset to convert.
@@ -74,10 +72,14 @@ def convert(
             needs an extra pass over the frames.
         progress: Optional progress callback.
         cancel: Optional cancel token.
+        dtype: Output dtype, e.g. "float32" or "uint16". By default the source's, if the format can store it.
         **options: Writer options, e.g. `compression="zlib"`, `dataset="data"`, `quality=95`.
 
     Returns:
         The destination path.
+
+    Raises:
+        PdXrayError: If the format can't store the frames (or the chosen `dtype`).
     """
     destination = Path(destination)
     n_frame_axes = len(frame_axes(source.axes))
@@ -93,13 +95,20 @@ def convert(
         metadata["source_frames"] = first
 
     frame_shape, n_frames = frame_layout(shape, source.axes)
-    dtype = source.dtype
-    scaling: tuple[float, float, int] | None = None
-    if not supports(destination, dtype, frame_shape):
-        target = next((t for t in (np.uint16, np.uint8) if supports(destination, np.dtype(t), frame_shape)), None)
-        if target is None:
+    if dtype is not None:
+        dtype = np.dtype(dtype)
+        if not supports(destination, dtype, frame_shape):
+            raise PdXrayError(f"{destination.suffix} can't store {frame_shape} {dtype} frames.")
+    elif supports(destination, source.dtype, frame_shape):
+        dtype = source.dtype
+    else:
+        dtype = next(
+            (np.dtype(t) for t in (np.uint16, np.uint8) if supports(destination, np.dtype(t), frame_shape)), None
+        )
+        if dtype is None:
             raise PdXrayError(f"{destination.suffix} can't store frames of shape {frame_shape}.")
-        dtype = np.dtype(target)
+    scaling: tuple[float, float, int] | None = None
+    if dtype != source.dtype and dtype.kind in "ui":
         lo, hi = value_range or compute_value_range(source, first, progress, cancel)
         maxval = int(np.iinfo(dtype).max)
         scale = (hi - lo) / maxval if hi > lo else 1.0
@@ -115,20 +124,28 @@ def convert(
     if destination.suffix.lower() in (".jpg", ".jpeg"):
         logger.warning("JPEG is lossy: pixel values in %s won't match the source exactly.", destination.name)
 
-    clipped = False
+    clipped = threading.Event()
+    if scaling is not None:
+        lo, scale, maxval = scaling
+
+        def scaled(frame: NDArray[Any]) -> NDArray[Any]:
+            values = frame.astype(np.float64)
+            values -= lo
+            values /= scale
+            np.nan_to_num(values, copy=False, nan=0.0)
+            if values.min() < -0.5 or values.max() > maxval + 0.5:
+                clipped.set()
+            np.clip(values, 0, maxval, out=values)
+            return np.rint(values, out=values).astype(dtype)
+
+        # Scaling takes ~0.1 s per 8 MP frame: do it in a mapped source's processing threads.
+        source = MappedDataset(source, scaled, source.workers if isinstance(source, MappedDataset) else 1)
 
     def output_frames() -> Iterator[NDArray[Any]]:
-        nonlocal clipped
         for frame in track(iter_frames(source, first), n_frames, f"Writing {destination.name}", progress, cancel):
-            if scaling is None:
-                yield frame
-                continue
-            lo, scale, maxval = scaling
-            values = np.nan_to_num((frame.astype(np.float64) - lo) / scale, nan=0.0)
-            clipped = clipped or bool((values < -0.5).any() or (values > maxval + 0.5).any())
-            yield np.rint(np.clip(values, 0, maxval)).astype(dtype)
+            yield frame if frame.dtype == dtype else frame.astype(dtype)
 
     write_frames(destination, output_frames(), shape, dtype, source.axes, metadata, **options)
-    if clipped:
+    if clipped.is_set():
         logger.warning("Values outside the value range were clipped in %s.", destination.name)
     return destination

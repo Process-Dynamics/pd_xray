@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 
-import type { Curve, Operation, OperationParam, Preview, Reference, Tone } from "./api";
+import type { Curve, Operation, OperationParam, Preview, Reference, Step, Tone } from "./api";
 import { formatValue } from "./format";
 import { CurveEditor, useToneCurve } from "./Histogram";
 import { ReferencePicker } from "./ReferencePicker";
@@ -36,6 +36,11 @@ export function newStep(operation: Operation): EditableStep {
     params: Object.fromEntries(operation.params.map((p) => [p.name, p.default])),
     enabled: true,
   };
+}
+
+/** A step from a pipeline file, ready to edit. */
+export function editableStep(step: Step): EditableStep {
+  return { id: nextStepId++, op: step.op, params: step.params, enabled: step.enabled };
 }
 
 /** Number field that commits on Enter or blur, so typing doesn't start a preview per keystroke. Empty = null. */
@@ -124,7 +129,13 @@ function ParamControl(props: {
           {picking && (
             <ReferencePicker
               title={`${param.name}: ${param.description}`}
-              start={typeof value === "string" ? value : props.datasetFolder}
+              start={
+                typeof value !== "string"
+                  ? props.datasetFolder
+                  : value.startsWith("/")
+                    ? value
+                    : `${props.datasetFolder}/${value}` // saved relative to the dataset's folder
+              }
               onPick={(reference: Reference) => {
                 setPicking(false);
                 onChange(reference);

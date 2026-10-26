@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from typing import BinaryIO
 
-from pd_xray.storage.base import Entry, Storage, name_of, normalise_path
+from pd_xray.storage.base import Entry, Storage, Upload, name_of, normalise_path, part_name
 from pd_xray.storage.errors import InvalidPathError
 
 
@@ -68,3 +68,42 @@ class LocalStorage(Storage):
     def read_range(self, path: str, offset: int, size: int) -> bytes:
         with self.full_path(path).open("rb") as file:
             return os.pread(file.fileno(), size, offset)
+
+    def upload(self, path: str, size: int, modified: float) -> Upload:
+        return _LocalUpload(self, normalise_path(path), size, modified)
+
+    def remove(self, path: str) -> None:
+        self.full_path(path).unlink()
+
+
+class _LocalUpload(Upload):
+    def __init__(self, storage: LocalStorage, path: str, size: int, modified: float) -> None:
+        self.target, self.modified = storage.full_path(path), modified
+        self.target.parent.mkdir(parents=True, exist_ok=True)
+        self.part = self.target.with_name(part_name(self.target.name, size, modified))
+        self.part_path = self.part.relative_to(storage.root).as_posix()
+        self.offset = self.part.stat().st_size if self.part.exists() else 0
+        if self.offset > size:
+            self.offset = 0
+        self._file = self.part.open("r+b" if self.offset else "wb", buffering=0)
+        self._file.truncate(self.offset)
+
+    def write(self, data: bytes) -> None:
+        view = memoryview(data)
+        while view:
+            written = os.pwrite(self._file.fileno(), view, self.offset)
+            self.offset += written
+            view = view[written:]
+
+    def commit(self) -> None:
+        os.fsync(self._file.fileno())
+        self._file.close()
+        os.utime(self.part, (self.modified, self.modified))
+        os.replace(self.part, self.target)
+
+    def discard(self) -> None:
+        self._file.close()
+        self.part.unlink(missing_ok=True)
+
+    def close(self) -> None:
+        self._file.close()

@@ -44,6 +44,12 @@ export interface Connection {
   settings: ConnectionSettings;
 }
 
+/** A file or folder on a connection, or on the server (`connection` null: an absolute path inside the roots). */
+export interface Location {
+  connection: string | null;
+  path: string;
+}
+
 export interface Hdf5Dataset {
   name: string;
   shape: number[];
@@ -129,6 +135,19 @@ export interface Step {
   params: Record<string, unknown>;
   enabled: boolean;
 }
+
+/** POST /api/jobs/run: apply steps to a whole dataset (or `frames`, a Python slice of the first axis). */
+export interface RunRequest {
+  dataset_id: string;
+  steps: Step[];
+  destination: string;
+  dtype: OutputType;
+  value_range: [number, number] | null;
+  frames: [number | null, number | null, number | null] | null;
+  overwrite: boolean;
+}
+
+export type OutputType = "float32" | "uint16" | "uint8";
 
 export interface Preview {
   pipeline: string;
@@ -263,8 +282,15 @@ export const api = {
   preview: (id: string, frame: number[], steps: Step[], client: string, signal?: AbortSignal) =>
     request<Preview>("POST", `/api/datasets/${id}/frames/${frameKey(frame)}/preview`, { steps, client }, signal),
   valueRange: (datasetId: string) => request<Job>("POST", "/api/jobs/value-range", { dataset_id: datasetId }),
-  download: (connection: string, path: string, folder: string, overwrite: boolean, verify: boolean) =>
-    request<Job>("POST", "/api/jobs/download", { connection, path, folder, overwrite, verify }),
+  /** Job: copy `source` into the folder `destination`, between any two places. */
+  copy: (source: Location, destination: Location, overwrite: boolean, verify: boolean) =>
+    request<Job>("POST", "/api/jobs/copy", { source, destination, overwrite, verify }),
+  /** Steps of a pipeline file; references may be relative to the dataset's folder. */
+  loadPipeline: (path: string) => request<{ path: string; steps: Step[] }>("GET", `/api/pipelines?${query({ path })}`),
+  /** Save steps; references inside the dataset's folder are stored relative to it. 409 if the file exists. */
+  savePipeline: (path: string, steps: Step[], datasetId: string, overwrite: boolean) =>
+    request<{ path: string }>("POST", "/api/pipelines", { path, steps, dataset_id: datasetId, overwrite }),
+  run: (body: RunRequest) => request<Job>("POST", "/api/jobs/run", body),
   cancelJob: (id: string) => request<Job>("POST", `/api/jobs/${id}/cancel`),
 };
 

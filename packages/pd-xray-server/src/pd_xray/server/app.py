@@ -24,15 +24,16 @@ from pydantic import BaseModel
 from pd_xray.core import CancelToken, OperationCancelledError, PdXrayError, ProgressCallback
 from pd_xray.io import compute_value_range, supported_extensions
 from pd_xray.io.hdf5 import inspect_hdf5
-from pd_xray.processing import OPERATIONS, tone_map
+from pd_xray.processing import OPERATIONS, Pipeline, tone_map
 from pd_xray.server.colormaps import COLORMAPS
 from pd_xray.server.connections import BROWSER_COOKIE, ConnectionStore, list_remote, new_browser_id
 from pd_xray.server.datasets import DatasetStore, NotFoundError, jsonable
 from pd_xray.server.jobs import JobManager
 from pd_xray.server.paths import AccessDeniedError, list_directory, resolve_path
 from pd_xray.server.render import MEDIA_TYPES, ImageFormat, parse_tone
+from pd_xray.server.runs import PIPELINE_EXTENSIONS, check_run, dataset_folder, run_pipeline, save_pipeline
 from pd_xray.server.settings import Settings
-from pd_xray.storage import HostKeyError, LocalStorage, copy, normalise_path
+from pd_xray.storage import HostKeyError, LocalStorage, Storage, copy, join_path, normalise_path
 
 logger = logging.getLogger(__name__)
 
@@ -67,14 +68,41 @@ class ConnectionRequest(BaseModel):
     credentials: dict[str, str]
 
 
-class DownloadRequest(BaseModel):
-    """Body of POST /api/jobs/download: copy `path` of a connection into the local `folder` (inside the roots)."""
+class Location(BaseModel):
+    """A file or folder on a connection, or on the server (`connection` None: an absolute path inside the roots)."""
 
-    connection: str
+    connection: str | None = None
     path: str
-    folder: str
+
+
+class CopyRequest(BaseModel):
+    """Body of POST /api/jobs/copy: copy the file or folder `source` into the folder `destination`, keeping its name."""
+
+    source: Location
+    destination: Location
     overwrite: bool = False
     verify: bool = False
+
+
+class SavePipelineRequest(BaseModel):
+    """Body of POST /api/pipelines. With `dataset_id`, references inside the dataset's folder are saved relative."""
+
+    path: str
+    steps: list[dict[str, Any]]
+    dataset_id: str | None = None
+    overwrite: bool = False
+
+
+class RunRequest(BaseModel):
+    """Body of POST /api/jobs/run. `frames` is (start, stop, step) along the first axis, as a Python slice."""
+
+    dataset_id: str
+    steps: list[dict[str, Any]]
+    destination: str
+    dtype: str = "float32"
+    value_range: tuple[float, float] | None = None
+    frames: tuple[int | None, int | None, int | None] | None = None
+    overwrite: bool = False
 
 
 class ValueRangeRequest(BaseModel):
@@ -133,6 +161,7 @@ def create_app(settings: Settings) -> FastAPI:
     app.add_exception_handler(FileNotFoundError, error(404))
     app.add_exception_handler(NotADirectoryError, error(400))
     app.add_exception_handler(OperationCancelledError, error(409))
+    app.add_exception_handler(FileExistsError, error(409))
     previews: dict[str, CancelToken] = {}  # running preview per browser tab
     previews_lock = threading.Lock()
 
@@ -320,6 +349,47 @@ def create_app(settings: Settings) -> FastAPI:
         # Ids are new on every open, so a tile URL never changes meaning while the dataset is open.
         return Response(content, media_type=MEDIA_TYPES[fmt], headers={"Cache-Control": "private, max-age=3600"})
 
+    @app.get("/api/pipelines")
+    def load_pipeline(path: str) -> dict[str, Any]:
+        """Steps of a pipeline file (.yaml/.yml), as saved: references may be relative to the dataset's folder."""
+        resolved = resolve_path(path, settings.roots)
+        if resolved.suffix.lower() not in PIPELINE_EXTENSIONS:
+            raise PdXrayError(f"Pipeline files end in .yaml or .yml, got '{resolved.name}'.")
+        if not resolved.is_file():
+            raise FileNotFoundError(f"No such file: {resolved}")
+        return {"path": str(resolved), "steps": Pipeline.load(resolved).to_dict()["steps"]}
+
+    @app.post("/api/pipelines")
+    def save_pipeline_file(request: SavePipelineRequest) -> dict[str, Any]:
+        """Save steps as a pipeline file. Existing files are kept (409) unless `overwrite`."""
+        resolved = resolve_path(request.path, settings.roots)
+        if not resolved.parent.is_dir():
+            raise NotADirectoryError(f"Not a folder: {resolved.parent}")
+        base = dataset_folder(store.get(request.dataset_id)) if request.dataset_id else None
+        return {"path": str(save_pipeline(resolved, request.steps, base, request.overwrite))}
+
+    @app.post("/api/jobs/run")
+    def run_job(request: RunRequest) -> dict[str, Any]:
+        """Job: apply a pipeline to a whole dataset (or `frames`) and write it to `destination`, a file in the allowed
+        folders (format from its extension), plus `<destination>.pipeline.yaml`. See `runs.py`."""
+        entry = store.get(request.dataset_id)
+        Pipeline.from_dict({"pd_xray_pipeline": 1, "steps": request.steps})  # invalid steps fail now, not in the job
+        destination = resolve_path(request.destination, settings.roots)
+        if not destination.parent.is_dir():
+            raise NotADirectoryError(f"Not a folder: {destination.parent}")
+        check_run(entry, destination, request.dtype, request.overwrite)
+        frames = None if request.frames is None else slice(*request.frames)
+        if frames is not None and frames.step == 0:
+            raise PdXrayError("The frame step can't be 0.")
+        value_range = request.value_range
+
+        def work(progress: ProgressCallback, cancel: CancelToken) -> dict[str, Any]:
+            return run_pipeline(
+                store, entry, request.steps, destination, request.dtype, value_range, frames, progress, cancel
+            )
+
+        return jobs.submit(f"Process {entry.path.name} into {destination.name}", work)
+
     @app.get("/api/jobs")
     def list_jobs() -> list[dict[str, Any]]:
         return jobs.list()
@@ -343,32 +413,42 @@ def create_app(settings: Settings) -> FastAPI:
 
         return jobs.submit(f"Value range of {entry.path.name}", work)
 
-    @app.post("/api/jobs/download")
-    def download_job(request: Request, body: DownloadRequest) -> dict[str, Any]:
-        """Job: copy a remote file or folder into a local folder (see `pd_xray.storage.copy`). Identical files are
-        skipped and interrupted downloads resume; differing files fail the job unless `overwrite`."""
-        connection = connections.get(request.state.browser, body.connection)
-        source = normalise_path(body.path)
-        folder = resolve_path(body.folder, settings.roots)
-        if not folder.is_dir():
-            raise NotADirectoryError(f"Not a folder: {folder}")
-        name = source.rsplit("/", 1)[-1] or re.sub(r"[^\w.-]+", "_", connection.name).strip("_")  # root: its name
-        destination = LocalStorage(folder)
+    def locate(browser: str, location: Location) -> tuple[Storage, str, str, str]:
+        """(storage, path in it, name, label for messages) of a location. Local paths are inside the roots."""
+        if location.connection is None:
+            path = resolve_path(location.path, settings.roots)
+            root = next(r for r in settings.roots if path.is_relative_to(r))
+            return LocalStorage(root), normalise_path(path.relative_to(root).as_posix()), path.name, str(path)
+        connection = connections.get(browser, location.connection)
+        remote = normalise_path(location.path)
+        name = remote.rsplit("/", 1)[-1] or re.sub(r"[^\w.-]+", "_", connection.name).strip("_")  # root: its name
+        return connection.storage, remote, name, f"{connection.name}: /{remote}"
+
+    @app.post("/api/jobs/copy")
+    def copy_job(request: Request, body: CopyRequest) -> dict[str, Any]:
+        """Job: copy a file or folder into a folder, between any two places: server folders and connections (see
+        `pd_xray.storage.copy`). Identical files are skipped and interrupted copies resume; differing files fail the
+        job unless `overwrite`. Remote-to-remote copies stream through the server."""
+        source, source_path, name, _ = locate(request.state.browser, body.source)
+        destination, folder, _, label = locate(request.state.browser, body.destination)
+        if not destination.stat(folder).is_dir:
+            raise NotADirectoryError(f"Not a folder: {label}")
+        target = join_path(folder, name)
 
         def work(progress: ProgressCallback, cancel: CancelToken) -> dict[str, Any]:
             result = copy(
-                connection.storage,
                 source,
+                source_path,
                 destination,
-                name,
+                target,
                 overwrite=body.overwrite,
                 verify=body.verify,
                 progress=progress,
                 cancel=cancel,
             )
-            return {**vars(result), "destination": str(folder / name)}
+            return {**vars(result), "destination": f"{label.rstrip('/')}/{name}"}
 
-        return jobs.submit(f"Download {name}", work, unit="bytes")
+        return jobs.submit(f"Copy {name} to {label}", work, unit="bytes")
 
     @app.websocket("/api/events")
     async def events(websocket: WebSocket) -> None:
