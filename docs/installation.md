@@ -15,6 +15,9 @@ pd-xray serve --root /path/to/data
 `environment.yml` pins every dependency to an exact version (NumPy 1.26.4, matching the lab's Jetson) and installs
 all five packages from the `packages/` folder. The web UI is already built; Node isn't needed.
 
+`pip check` reports "imagecodecs 2026.8.16 has requirement numpy>=2.1": harmless. conda-forge builds it to run on
+NumPy 1.26 (compressed TIFFs read fine), and no release that allows NumPy 1.x fits with hdf5plugin 7.1.0.
+
 Check the installation:
 
 ```bash
@@ -38,10 +41,25 @@ pip install --force-reinstall --no-deps ./packages/pd-xray-core "./packages/pd-x
 The last line is needed because `environment.yml` installs copies of the packages: `git pull` alone doesn't update
 them.
 
-## Only the libraries, with pip
+## From a release (other projects)
 
-For using `pd_xray.io` etc. from another project, install just what you need into that project's environment. The
-packages aren't on PyPI yet, so install from a clone (core first, because the others depend on it):
+Each GitHub release has the five packages as wheels. The packages aren't on PyPI, so point pip at the release's
+files with `--find-links`; their dependencies (NumPy, h5py, …) come from PyPI as usual:
+
+```bash
+REL=https://github.com/Process-Dynamics/pd_xray/releases/expanded_assets/v0.1.0
+pip install --find-links $REL "pd-xray-io[hdf5,tiff]"          # e.g. read HDF5 and TIFF only (pulls pd-xray-core)
+pip install --find-links $REL pd-xray-processing "pd-xray-storage[sftp]"
+pip install --find-links $REL pd-xray-server                   # the whole web app
+```
+
+In another project's `requirements.txt`, put `--find-links https://github.com/…/expanded_assets/v0.1.0` on the first
+line, then e.g. `pd-xray-io[hdf5]~=0.1.0`. The packages require each other at the same minor version, so a release's
+packages always install together.
+
+## Only the libraries, from a clone
+
+Without a release, install from a clone (core first, because the others depend on it):
 
 ```bash
 pip install ./packages/pd-xray-core "./packages/pd-xray-io[hdf5,tiff]"     # e.g. read HDF5 and TIFF only
@@ -67,6 +85,8 @@ pip install numpy==1.26.4 h5py==3.16.0 hdf5plugin==7.1.0 tifffile==2025.5.10 pil
 pip install ./packages/pd-xray-core "./packages/pd-xray-storage[all]" "./packages/pd-xray-io[all]" \
     ./packages/pd-xray-processing ./packages/pd-xray-server
 ```
+
+Without a clone, replace the last line with `pip install --find-links $REL pd-xray-server` (see above).
 
 (SciPy 1.15.3 is the pip release of conda's 1.15.2; both are the last line for Python 3.10.)
 

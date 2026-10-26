@@ -9,7 +9,7 @@ description = "Storage backends (local/NFS, SFTP, S3) and file transfers for pd_
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
-dependencies = ["pd-xray-core"]
+dependencies = ["pd-xray-core~=0.1.0"]
 
 [project.optional-dependencies]
 sftp = ["asyncssh>=2.21,<3"]

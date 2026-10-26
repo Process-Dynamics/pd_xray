@@ -10,10 +10,10 @@ readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
 dependencies = [
-    "pd-xray-core",
-    "pd-xray-storage[all]",
-    "pd-xray-io[all]",
-    "pd-xray-processing",
+    "pd-xray-core~=0.1.0",
+    "pd-xray-storage[all]~=0.1.0",
+    "pd-xray-io[all]~=0.1.0",
+    "pd-xray-processing~=0.1.0",
     "numpy>=1.26.4,<2",
     "fastapi>=0.115,<1",
     "uvicorn>=0.30",

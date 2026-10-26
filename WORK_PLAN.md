@@ -3,8 +3,8 @@
 One step at a time, in order. A step is done when it meets "Done" and the user has reviewed it.
 `[ ]` todo · `[~]` in progress · `[x]` done. Resolve a step's open decisions before starting it.
 
-**Current:** 2.4a built, awaiting review (user checks the real NAS, manual guide §16). Then 2.4b (S3; user's bucket access pending), then 1.9. Real S3 check
-of 2.3 deferred too; run manual guide §14 when fixed.
+**Current:** 1.9 built, awaiting review (release, colleague install, Jetson: manual guide §17). 2.4b (S3) waits for
+bucket access; real S3 check of 2.3 too (§14).
 Phase 2 (2.1–2.3) ran before 1.8; 2.4 runs before 1.9.
 Open items: Starlette TestClient warns `httpx` → `httpx2` (harmless); threshold's default value 0 keeps everything.
 Manual test guide: `docs/manual_testing.md` (update it per step). User docs: `README.md`, `docs/*.md` (update with
@@ -144,9 +144,14 @@ Scope: local/NFS files. TIFF (multi-page), PNG, JPG, HDF5. Axes `(Y, X)`, `(T, Y
   (uint16 scaling was serial at ~8 frames/s before moving it into the threads). 0042 flat field with relative
   references: identical from Python. Tiles during a run 71 ms (54 idle). Py3.10 tested.
 
-### [ ] 1.9 packaging
+### [~] 1.9 packaging
 - Frontend bundled into `pd-xray-server`. User README. Clean install on a second machine (and the Jetson).
 - Done: a colleague installs and uses it from the README alone.
+- Built: inner pins `~=0.1.0` (`test_versions.py` checks versions and pins), release = `pip wheel` of the five
+  packages attached to a GitHub release; users `pip install --find-links …/releases/expanded_assets/vX.Y.Z`.
+  `imagecodecs=2026.8.16` pinned in both env files. Docs: installation (from a release), development (releases).
+- Measured: fresh conda env from a clean copy 34 s, smoke test OK; Python 3.10 venvs from the wheels (library-only,
+  full app) `pip check` clean and working. Left for the user: publish v0.1.0, a colleague's machine, the Jetson.
 
 ## Phase 2: Remote storage and copying
 
@@ -206,7 +211,7 @@ Done before 1.8/1.9 (user request). Port legacy `src/pd_xray/data/backends/` aft
 ### [ ] 2.4 Open remote datasets lazily (user request, before 1.9)
 View, process and run pipelines on files on a NAS or S3 without copying them first. Only the bytes read are fetched.
 
-#### [~] 2.4a NAS (SFTP)
+#### [x] 2.4a NAS (SFTP)
 - io: `storage=` on `open_dataset`, `open_sequence`, `inspect_hdf5`, `reference_frames` (duck-typed: an object with
   `open`/`list`, so io doesn't import storage). HDF5, TIFF (multi-page, sequences), PNG/JPG from file objects.
 - storage: remote files read through a bounded block cache (small metadata reads don't each cost a round trip;
@@ -228,7 +233,7 @@ View, process and run pipelines on files on a NAS or S3 without copying them fir
 - Measured (local OpenSSH stand-in, machine fully loaded by another user): 99 GB file inspect 0.38 s, open 0.6 s,
   new frame 0.3–0.6 s via API, UI arrow steps 81–330 ms; SFTP reads ~70 MB/s under load (parallel parts didn't
   help then; re-check on an idle machine). Remote flat field + median run = Python with `storage=` = Python on the
-  local files (identical). Py3.10 tested.
+  local files (identical). Py3.10 tested. Reviewed.
 
 #### [ ] 2.4b S3
 - The same over S3 (range GETs), tested with moto. The user checks the real bucket when access works.
@@ -249,7 +254,6 @@ Tomography and 3D views, Zarr/remote-friendly layout, segmentation/dendrite anal
 
 | # | Decision | Step | Leaning |
 |---|----------|------|---------|
-| D9 | How inter-package deps resolve for outside installs (`pd-xray-storage` alone can't find `pd-xray-core`) | 1.9 | Private index or PyPI vs git direct references |
 | D12 | Test targets: NAS host/folder, S3 provider (AWS/MinIO/Synology/…) and bucket | 2.1 | User provides |
 
 ## Decisions log
@@ -327,3 +331,7 @@ Tomography and 3D views, Zarr/remote-friendly layout, segmentation/dendrite anal
 - 2026-10-26: 1.8 reviewed. 2.4 (lazy remote datasets) moved before 1.9, split into 2.4a NAS and 2.4b S3 (S3 later:
   access issue). io takes `storage=` (duck-typed open/list; no storage import). Remote datasets' references live on
   the same connection (relative to the dataset's folder when inside it).
+- 2026-10-26: 2.4a reviewed. D9: releases are GitHub Release wheels installed with `--find-links` (no PyPI for
+  now). Packages require their siblings at the same minor version (`~=`). imagecodecs pinned to 2026.8.16: every
+  release allowing NumPy 1.x needs c-blosc2 2.x, which conflicts with hdf5plugin 7.1.0; conda-forge's build runs on
+  NumPy 1.26 (pip check warns, documented).

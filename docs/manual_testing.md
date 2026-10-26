@@ -439,13 +439,33 @@ new frame 0.3–0.6 s (whole-frame tile); arrow steps in the UI 81–330 ms; 004
 with 12 references from the NAS: first preview 6.4 s (loads them), then 0.1 s per step; 14-frame run 3–11 s. UI run
 = Python over SFTP = Python on local copies (identical).
 
-## 17. Python 3.10 (Jetson-like)
+## 17. Packaging and a clean install (1.9)
+
+Release (you): bump nothing for 0.1.0; build wheels as in [development](development.md#releases), tag `v0.1.0`,
+create the GitHub release and attach the five `.whl` files.
+
+On a second machine (a colleague's, from the README alone): Quick start with conda → the app opens; open a file,
+add a step, Run…. `pip check` only reports the known imagecodecs/NumPy line.
+
+On the Jetson (system Python 3.10, aarch64), in a fresh venv: the pinned `pip install …` line from
+[installation](installation.md#python-310--jetson-no-conda), ending with `--find-links $REL pd-xray-server`
+instead of the clone paths. `pd-xray serve --host 0.0.0.0 --no-browser --root …`, open it from your computer,
+scrub a file, run a pipeline. Library only, in another venv: `pip install --find-links $REL "pd-xray-io[hdf5]"`
+installs just pd-xray-core and pd-xray-io (+ h5py, hdf5plugin, NumPy 1.26.4); opening a TIFF then says
+`pip install "pd-xray-io[tiff]"`.
+
+Measured here (x86-64): wheels 4–207 KB (the server's holds the built UI); fresh conda env from a clean copy 34 s,
+smoke test OK; Python 3.10 venvs from the wheels: library-only and full app (pinned versions), `pip check` clean,
+app serves the UI, tiles and previews. pip reads GitHub `expanded_assets` pages as `--find-links` (checked on
+another project's release).
+
+## 18. Python 3.10 (Jetson-like)
 
 ```bash
 python3 -m venv /tmp/pd310 && /tmp/pd310/bin/pip install ./packages/pd-xray-core "./packages/pd-xray-storage[all]" "./packages/pd-xray-io[all]" ./packages/pd-xray-processing ./packages/pd-xray-server fastapi==0.142.2 uvicorn==0.54.0 websockets==16.1.1 httpx==0.28.1 moto==5.2.4 pytest
 /tmp/pd310/bin/pip list | grep -iE "numpy|h5py|tifffile|pillow|scipy|scikit|yaml|fastapi|uvicorn|websockets"
 # 1.26.4, 3.16.0, 2025.5.10, 12.3.0, 1.15.3, 0.25.2, 6.0.3, 0.142.2, 0.54.0, 16.1.1
-cd /tmp && /tmp/pd310/bin/python -m pytest -q --import-mode=importlib ~/pd_xray/packages   # 96 passed
+cd /tmp && /tmp/pd310/bin/python -m pytest -q --import-mode=importlib ~/pd_xray/packages   # 97 passed
 ```
 
 Cleanup: `rm -rf /tmp/pd_xray_manual /tmp/pd310`.

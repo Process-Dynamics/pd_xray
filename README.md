@@ -48,4 +48,6 @@ result = Pipeline([Step("median", {"size": 3})])(frame)
 
 - [docs/](docs/index.md): installation options (shared server, Jetson, pip), the web app in detail, and how to use each
   Python package.
+- Using the packages in your own project: install them from a GitHub release
+  ([installation](docs/installation.md#from-a-release-other-projects)).
 - Problems or questions: open an issue on GitHub.

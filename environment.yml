@@ -8,6 +8,7 @@ dependencies:
   - h5py=3.16.0
   - hdf5plugin=7.1.0
   - tifffile=2025.5.10
+  - imagecodecs=2026.8.16      # via tifffile; conda-forge build runs on NumPy 1.26 (pip check warns: upstream says >=2.1)
   - pillow=12.3.0
   - scipy=1.15.2
   - scikit-image=0.25.2

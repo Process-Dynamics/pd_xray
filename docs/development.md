@@ -48,6 +48,22 @@ The Jetson runs Python 3.10, so code must too (no 3.11+ features; ruff and mypy 
 [installation](installation.md#python-310--jetson-no-conda) plus `pip install pytest httpx==0.28.1 moto==5.2.4`, then
 `python -m pytest -q --import-mode=importlib packages` from the repository root.
 
+## Releases
+
+The five packages are released together, with the same version, each requiring its siblings at `~=` that version
+(`test_versions.py` checks this). To release:
+
+1. Set `version` in all five `packages/*/pyproject.toml` and the `~=X.Y.Z` pins between them; build the UI.
+2. Run all checks, then build the wheels (pure Python, so one set works on x86-64 and the Jetson's aarch64):
+
+   ```bash
+   rm -rf dist && pip wheel --no-deps -w dist ./packages/pd-xray-*
+   ```
+
+3. Tag the commit (`vX.Y.Z`), create a GitHub release for the tag, and attach the five `dist/*.whl` files.
+
+Users then install with `--find-links` (see [installation](installation.md#from-a-release-other-projects)).
+
 ## Manual checks on real data
 
 [`manual_testing.md`](manual_testing.md) walks through every feature with the sample files in `data/` (not in git).
