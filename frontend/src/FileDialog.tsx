@@ -10,7 +10,7 @@ import { formatBytes } from "./format";
 interface Props {
   title: string;
   mode: "open" | "save";
-  start: string; // folder to open first
+  start: string | null; // folder to open first; null for the allowed folders
   extensions: string[]; // files shown, e.g. [".yaml", ".yml"]; others are hidden
   name?: string; // save: the name typed so far
   onName?: (name: string) => void; // save: the name changed (typed, or a file clicked)

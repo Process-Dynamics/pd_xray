@@ -167,6 +167,25 @@ resolved = pipeline.resolve(lambda ref: average_frames(reference_frames(ref, bas
 
 `reference_files(reference, base)` lists the files only.
 
+## Files on a NAS or S3
+
+Every reader takes `storage=`: a `pd_xray.storage` NAS or S3 storage (or any object with `open`, `stat` and
+`list`). Paths are then on that storage, from its root. Only the bytes needed are read; nothing is copied.
+
+```python
+from pd_xray.storage import SFTPStorage
+
+with SFTPStorage("nas.lab", "me", root="/volume1/xray") as nas:
+    ds = open_dataset("2026/scan.h5", dataset="entry/data/data", storage=nas)
+    frame = ds[100]                                        # ~one frame's bytes over the network
+    seq = open_sequence("2026/0042", "*_img.tif", storage=nas)
+    inspect_hdf5("2026/scan.h5", storage=nas)
+    darks = reference_frames("dar", base="2026/0042", storage=nas)   # "/2026/…" = from the storage's root
+```
+
+TIFF files from a storage are read page by page (memory mapping needs a local file). Close datasets before the
+storage. A 19 MB frame took 0.1–0.4 s from a local test SFTP server; the real NAS depends on its network.
+
 ## In-memory arrays
 
 `ArrayDataset` wraps a NumPy array (or a `np.memmap`) so it can be used wherever a `Dataset` is expected:

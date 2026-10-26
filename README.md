@@ -29,8 +29,9 @@ Next time, only the last two lines. Stop the server with Ctrl-C.
 4. **Process**: pick from the "+ Add step…" menu (flat/dark correction, filters, crop, rotate, background
    subtraction, …). The current frame shows the result; press P to compare with the original.
    **Save…/Load…** keep the steps in a file; **Run…** processes the whole dataset into a new file in the background.
-5. **NAS or S3**: in the left panel's top level, "+ Add connection". ⧉ next to any file or folder copies it to a
-   folder on the server, a NAS or S3. Progress and Cancel are in the bottom bar; copying again resumes.
+5. **NAS or S3**: in the left panel's top level, "+ Add connection". Files there open directly (read as needed, not
+   copied). ⧉ next to any file or folder copies it to a folder on the server, a NAS or S3. Progress and Cancel are in
+   the bottom bar; copying again resumes.
 
 ## Python
 

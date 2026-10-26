@@ -116,7 +116,11 @@ Under the steps:
 - Connections are private to your browser. Passwords and keys stay in the server's memory only, so after a server
   restart you connect again. The dialog remembers host, bucket etc. (never passwords): click a saved entry to fill
   the form. × next to a connection disconnects it.
-- Opening files directly from a NAS or S3 comes later; for now, copy them to a server folder.
+- **Opening files on a connection**: click a file or a `▦` sequence there, as for local files. It's read from the
+  NAS/S3 as needed (only the frames you look at), not copied. Processing, the histogram and Run… work the same.
+  Dark/flat "Choose…" browses the same connection; paths inside the dataset's folder are saved relative to it.
+  Run… output and saved pipelines go to the server's folders; the `.pipeline.yaml` records the connection's URL
+  (never passwords). Disconnecting closes datasets opened from it.
 
 ## Copying
 

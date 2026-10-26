@@ -3,9 +3,9 @@
 One step at a time, in order. A step is done when it meets "Done" and the user has reviewed it.
 `[ ]` todo · `[~]` in progress · `[x]` done. Resolve a step's open decisions before starting it.
 
-**Current:** 1.8 built, awaiting review. Next: 1.9. Real S3 check of 2.3 deferred (bucket permission problem); run
-manual guide §14 when fixed.
-Phase 2 (2.1–2.3) runs before 1.8/1.9.
+**Current:** 2.4a built, awaiting review (user checks the real NAS, manual guide §16). Then 2.4b (S3; user's bucket access pending), then 1.9. Real S3 check
+of 2.3 deferred too; run manual guide §14 when fixed.
+Phase 2 (2.1–2.3) ran before 1.8; 2.4 runs before 1.9.
 Open items: Starlette TestClient warns `httpx` → `httpx2` (harmless); threshold's default value 0 keeps everything.
 Manual test guide: `docs/manual_testing.md` (update it per step). User docs: `README.md`, `docs/*.md` (update with
 features).
@@ -126,7 +126,7 @@ Scope: local/NFS files. TIFF (multi-page), PNG, JPG, HDF5. Axes `(Y, X)`, `(T, Y
 - Measured: histogram 70–85 ms per full frame (5 ms cached); tone +5 ms per tile; tone step 0.15–0.35 s per 10 MP
   frame; slider or curve change to new tiles ~0.3–0.4 s. Display and step match exactly at full resolution.
 
-### [~] 1.8 pipeline save and run
+### [x] 1.8 pipeline save and run
 - Save/load the pipeline. Apply it to the dataset: pick output and format, run as a background job, cancel (D8).
 - Output records provenance (source, pipeline, version, date).
 - Done: a multi-GB dataset processes from the UI, and the saved pipeline reproduces the result from plain Python.
@@ -203,8 +203,36 @@ Done before 1.8/1.9 (user request). Port legacy `src/pd_xray/data/backends/` aft
   identical with dates kept; NAS→S3 141 MB/s, NAS→NAS 166 MB/s. Moto upload 130–173 MB/s (moto-bound). Reviewed on the real NAS; real S3 later. UI upload,
   cancel, resume, into-itself error and download checked in headless Chrome. Py3.10 tested.
 
-### [ ] 2.4 Open remote datasets (later)
-- io reads remote files lazily (range requests), falling back to download.
+### [ ] 2.4 Open remote datasets lazily (user request, before 1.9)
+View, process and run pipelines on files on a NAS or S3 without copying them first. Only the bytes read are fetched.
+
+#### [~] 2.4a NAS (SFTP)
+- io: `storage=` on `open_dataset`, `open_sequence`, `inspect_hdf5`, `reference_frames` (duck-typed: an object with
+  `open`/`list`, so io doesn't import storage). HDF5, TIFF (multi-page, sequences), PNG/JPG from file objects.
+- storage: remote files read through a bounded block cache (small metadata reads don't each cost a round trip;
+  large chunk reads go straight through, in parallel parts). Readers thread-safe under concurrent tile requests.
+- Server/UI: remote files and sequences open from the browser like local ones. Preview, tiles, histogram, runs work;
+  run output goes to server folders, `source` recorded as the URL (no credentials). References on the same
+  connection (picker browses it), relative to the dataset's folder when inside it. Clear error if the connection is
+  gone (e.g. after a server restart).
+- Done: the 99 GB HDF5 and the 0042 sequence on the NAS (local sshd stand-in; the user checks the real NAS) open,
+  scrub and process; a run with remote darks/flats reproduces from Python with `storage=`. Frame times measured.
+- Built: io `FileStore` protocol + `storage=` on `open_dataset`, `open_sequence`, `inspect_hdf5`, `reference_files`/
+  `reference_frames` (and the readers); remote TIFF is page-wise (no memmap). storage `RangeReader` is now a
+  thread-safe block cache (256 KB × 64 per open file; reads ≥ 1 MB go straight through) instead of a 1 MB
+  `BufferedReader` (which re-read whole ranges on every jump back). Server: `OpenRequest.connection`,
+  `/api/inspect?connection=`, remote paths start with "/" (from the connection root), `OpenDataset.folder`/`storage`,
+  references on the same connection, run record `storage` (URL) + `source`; remote listings openable with
+  sequences; disconnect closes its datasets. UI: remote files/sequences open, 🔌 in the Dataset panel, reference
+  picker browses the connection (returns "/…" paths), Save/Run dialogs start at the allowed folders.
+- Measured (local OpenSSH stand-in, machine fully loaded by another user): 99 GB file inspect 0.38 s, open 0.6 s,
+  new frame 0.3–0.6 s via API, UI arrow steps 81–330 ms; SFTP reads ~70 MB/s under load (parallel parts didn't
+  help then; re-check on an idle machine). Remote flat field + median run = Python with `storage=` = Python on the
+  local files (identical). Py3.10 tested.
+
+#### [ ] 2.4b S3
+- The same over S3 (range GETs), tested with moto. The user checks the real bucket when access works.
+- Done: as 2.4a, on S3.
 
 ## Phase 3: Hosted deployment
 - Docker (conda). GPU ops via CuPy with CPU parity tests.
@@ -296,3 +324,6 @@ Tomography and 3D views, Zarr/remote-friendly layout, segmentation/dendrite anal
   view's Min/Max; clipped; mapping in `value_scaling`). Pipelines save/load as YAML in the allowed folders; every run
   also writes `<output>.pipeline.yaml` (pipeline + provenance). `pd_xray.io.reference_frames` loads references for
   Python and the server alike. Outputs go to server folders only (copy to NAS/S3 with ⧉ afterwards).
+- 2026-10-26: 1.8 reviewed. 2.4 (lazy remote datasets) moved before 1.9, split into 2.4a NAS and 2.4b S3 (S3 later:
+  access issue). io takes `storage=` (duck-typed open/list; no storage import). Remote datasets' references live on
+  the same connection (relative to the dataset's folder when inside it).

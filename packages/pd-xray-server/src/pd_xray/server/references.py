@@ -7,8 +7,8 @@ from typing import Any
 from numpy.typing import NDArray
 
 from pd_xray.core import CancelToken
+from pd_xray.io import FileStore, reference_frames
 from pd_xray.io import reference_files as named_files
-from pd_xray.io import reference_frames
 from pd_xray.processing import OPERATIONS, Pipeline, Step, average_frames
 from pd_xray.processing.pipeline import Reference
 from pd_xray.server.paths import resolve_path
@@ -25,13 +25,15 @@ def reference_files(reference: Reference, base: Path, roots: Sequence[Path]) -> 
     return named_files([str(resolve_path(base / entry, roots)) for entry in entries])  # absolute entries replace base
 
 
-def average_files(files: Sequence[Path], cancel: CancelToken | None = None) -> NDArray[Any]:
-    """Mean of every frame in `files` (single- or multi-frame files), as float32.
+def average_files(
+    files: Sequence[Path], cancel: CancelToken | None = None, storage: FileStore | None = None
+) -> NDArray[Any]:
+    """Mean of every frame in `files` (single- or multi-frame files, on `storage` if given), as float32.
 
     Raises:
         PdXrayError: If a file can't be opened or frames differ in shape.
     """
-    return average_frames(reference_frames([str(f) for f in files]), cancel=cancel)
+    return average_frames(reference_frames([str(f) for f in files], storage=storage), cancel=cancel)
 
 
 def relative_references(pipeline: Pipeline, base: Path) -> Pipeline:

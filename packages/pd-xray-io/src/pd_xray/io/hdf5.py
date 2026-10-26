@@ -11,6 +11,7 @@ from numpy.typing import NDArray
 
 from pd_xray.core import PdXrayError, X, Y, import_optional
 from pd_xray.io.dataset import FRAME, Dataset, split_key
+from pd_xray.io.formats import FileStore, readable
 
 logger = logging.getLogger(__name__)
 
@@ -108,11 +109,12 @@ def _checked_extent(obj: Any) -> tuple[tuple[int, ...], list[int], list[str]]:
     return (end, *shape[1:]), missing, warnings
 
 
-def inspect_hdf5(path: str | Path) -> list[HDF5DatasetInfo]:
+def inspect_hdf5(path: str | Path, storage: FileStore | None = None) -> list[HDF5DatasetInfo]:
     """List every dataset in an HDF5 file without reading any pixel data.
 
     Args:
-        path: Local file path.
+        path: Local file path, or a path in `storage`.
+        storage: Read the file from here instead of the local disk (see `open_dataset`).
 
     Returns:
         Datasets in file order. Use `HDF5DatasetInfo.is_image` to filter image candidates.
@@ -129,7 +131,7 @@ def inspect_hdf5(path: str | Path) -> list[HDF5DatasetInfo]:
                 )
             )
 
-    with h5py.File(path, "r") as file:
+    with readable(path, storage) as source, h5py.File(source, "r") as file:
         file.visititems(visit)
     return found
 
@@ -157,11 +159,19 @@ class HDF5Dataset(Dataset):
     frames that were never written.
     """
 
-    def __init__(self, path: str | Path, name: str, axes: Sequence[str] | None = None) -> None:
+    def __init__(
+        self, path: str | Path, name: str, axes: Sequence[str] | None = None, storage: FileStore | None = None
+    ) -> None:
         h5py = _h5py()
         self.path = Path(path)
         self.name = name
-        self._file = h5py.File(self.path, "r")
+        self._handle = None if storage is None else storage.open(str(self.path))  # h5py reads through it
+        try:
+            self._file = h5py.File(self.path if self._handle is None else self._handle, "r")
+        except Exception:
+            if self._handle is not None:
+                self._handle.close()
+            raise
         try:
             obj = self._file.get(name)
             if not isinstance(obj, h5py.Dataset):
@@ -176,7 +186,7 @@ class HDF5Dataset(Dataset):
             for warning in warnings:
                 logger.warning("%s:%s: %s", self.path.name, name, warning)
         except Exception:
-            self._file.close()
+            self.close()
             raise
 
     def __getitem__(self, key: Any) -> NDArray[Any]:
@@ -193,24 +203,29 @@ class HDF5Dataset(Dataset):
 
     def close(self) -> None:
         self._file.close()
+        if self._handle is not None:
+            self._handle.close()
 
 
-def open_hdf5(path: Path, axes: Sequence[str] | None = None, dataset: str | None = None) -> HDF5Dataset:
+def open_hdf5(
+    path: Path, axes: Sequence[str] | None = None, storage: FileStore | None = None, dataset: str | None = None
+) -> HDF5Dataset:
     """Open a dataset in an HDF5 file.
 
     Args:
-        path: Local file path.
+        path: Local file path, or a path in `storage`.
         axes: Axis names. Defaults to the dimension labels, or ("frame", "y", "x") / ("y", "x") if unlabelled.
+        storage: Read the file from here instead of the local disk (see `open_dataset`).
         dataset: Path of the dataset inside the file. May be omitted if the file holds exactly one image dataset.
 
     Raises:
         DatasetSelectionError: If `dataset` is omitted and the file has zero or several image datasets.
     """
     if dataset is None:
-        candidates = [info.name for info in inspect_hdf5(path) if info.is_image]
+        candidates = [info.name for info in inspect_hdf5(path, storage) if info.is_image]
         if len(candidates) != 1:
             raise DatasetSelectionError(
                 f"{path.name} has {len(candidates)} image datasets; choose one with `dataset=`: {candidates}"
             )
         dataset = candidates[0]
-    return HDF5Dataset(path, dataset, axes)
+    return HDF5Dataset(path, dataset, axes, storage)

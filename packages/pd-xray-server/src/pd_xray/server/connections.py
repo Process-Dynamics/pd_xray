@@ -12,8 +12,10 @@ from pathlib import Path
 from typing import Any
 
 from pd_xray.core import PdXrayError
+from pd_xray.io import supported_extensions
 from pd_xray.io.sequence import natural_key
 from pd_xray.server.datasets import NotFoundError
+from pd_xray.server.paths import find_sequences
 from pd_xray.storage import S3Storage, SFTPStorage, Storage
 
 BROWSER_COOKIE = "pd_xray_browser"
@@ -105,7 +107,10 @@ class ConnectionStore:
         with self._lock:
             connection = self._connections.get(browser, {}).get(connection_id)
         if connection is None:
-            raise NotFoundError(f"No connection '{connection_id}'. It may have closed when the server restarted.")
+            raise NotFoundError(
+                f"No connection '{connection_id}': it was disconnected, or closed when the server restarted. "
+                "Connect again (+ Add connection)."
+            )
         return connection
 
     def list(self, browser: str) -> list[Connection]:
@@ -127,11 +132,9 @@ class ConnectionStore:
 
 
 def list_remote(connection: Connection, path: str, show_hidden: bool = False) -> dict[str, Any]:
-    """A remote folder (`path` normalised) shaped like `paths.list_directory` (folders first, natural order), plus
-    "connection".
-
-    Remote files can't be opened as datasets yet, so `openable` is False and no sequences are listed.
-    """
+    """A remote folder (`path` normalised) shaped like `paths.list_directory` (folders first, natural order, image
+    sequences found), plus "connection"."""
+    extensions = set(supported_extensions())
     entries = [
         {
             "name": e.name,
@@ -139,11 +142,18 @@ def list_remote(connection: Connection, path: str, show_hidden: bool = False) ->
             "kind": "dir" if e.is_dir else "file",
             "size": e.size,
             "modified": e.modified,
-            "openable": False,
+            "openable": not e.is_dir and Path(e.name).suffix.lower() in extensions,
         }
         for e in connection.storage.list(path)
         if show_hidden or not e.name.startswith(".")
     ]
     entries.sort(key=lambda e: (e["kind"] != "dir", natural_key(Path(str(e["name"])))))
     parent = None if not path else path.rpartition("/")[0]
-    return {"connection": connection.id, "path": path, "parent": parent, "entries": entries, "sequences": []}
+    files = [str(e["name"]) for e in entries if e["kind"] == "file"]
+    return {
+        "connection": connection.id,
+        "path": path,
+        "parent": parent,
+        "entries": entries,
+        "sequences": find_sequences(files),
+    }

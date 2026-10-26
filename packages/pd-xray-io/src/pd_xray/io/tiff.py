@@ -10,6 +10,7 @@ from numpy.typing import NDArray
 
 from pd_xray.core import CHANNEL, TIME, PdXrayError, X, Y, Z, import_optional, validate_axes
 from pd_xray.io.dataset import FRAME, Dataset, split_key
+from pd_xray.io.formats import FileStore, readable
 
 # tifffile axis codes -> our axis names. Unlisted codes (I, Q, …) become "frame".
 _AXIS_CODES = {"T": TIME, "Z": Z, "Y": Y, "X": X, "S": CHANNEL, "C": CHANNEL}
@@ -54,20 +55,26 @@ def _metadata(tif: Any) -> dict[str, Any]:
 class TIFFDataset(Dataset):
     """Lazy view of the first image series in a TIFF file.
 
-    Uncompressed, contiguous files are memory-mapped. Otherwise pages are read on demand.
-    Keeps the file open until `close()`.
+    Uncompressed, contiguous local files are memory-mapped. Otherwise (and from a `storage`) pages are read on
+    demand. Keeps the file open until `close()`.
     """
 
-    def __init__(self, path: str | Path, axes: Sequence[str] | None = None) -> None:
+    def __init__(self, path: str | Path, axes: Sequence[str] | None = None, storage: FileStore | None = None) -> None:
         tifffile = _tifffile()
         self.path = Path(path)
-        self._tif = tifffile.TiffFile(self.path)
+        self._handle = None if storage is None else storage.open(str(self.path))
         self._lock = threading.Lock()
+        try:
+            self._tif = tifffile.TiffFile(self.path if self._handle is None else self._handle)
+        except Exception:
+            if self._handle is not None:
+                self._handle.close()
+            raise
         try:
             series = self._tif.series[0]
             super().__init__(series.shape, series.dtype, axes or _default_axes(series), _metadata(self._tif))
             self._memmap: NDArray[Any] | None = None
-            if series.dataoffset is not None:
+            if series.dataoffset is not None and self._handle is None:
                 self._memmap = tifffile.memmap(self.path, series=0, mode="r")
             self._pages = series.pages
             page_shape = tuple(series.keyframe.shape)
@@ -76,7 +83,7 @@ class TIFFDataset(Dataset):
                     f"{self.path.name}: compressed TIFF series of shape {self.shape} isn't supported yet."
                 )
         except Exception:
-            self._tif.close()
+            self.close()
             raise
 
     def _page(self, index: int) -> NDArray[Any]:
@@ -98,14 +105,16 @@ class TIFFDataset(Dataset):
     def close(self) -> None:
         self._memmap = None
         self._tif.close()
+        if self._handle is not None:
+            self._handle.close()
 
 
-def open_tiff(path: Path, axes: Sequence[str] | None = None) -> TIFFDataset:
+def open_tiff(path: Path, axes: Sequence[str] | None = None, storage: FileStore | None = None) -> TIFFDataset:
     """Open a TIFF file. Axes default to those stored by tifffile/ImageJ, else ("frame", "y", "x") / ("y", "x")."""
-    return TIFFDataset(path, axes)
+    return TIFFDataset(path, axes, storage)
 
 
-def read_tiff_frame(path: Path) -> tuple[NDArray[Any], dict[str, Any]]:
+def read_tiff_frame(path: Path, storage: FileStore | None = None) -> tuple[NDArray[Any], dict[str, Any]]:
     """Read the first page of a TIFF file, plus its metadata."""
-    with _tifffile().TiffFile(path) as tif:
+    with readable(path, storage) as source, _tifffile().TiffFile(source) as tif:
         return np.asarray(tif.pages[0].asarray()), _metadata(tif)

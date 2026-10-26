@@ -5,15 +5,21 @@ trailing "/" are ignored, and ".." is refused.
 """
 
 import io
+import threading
 from abc import ABC, abstractmethod
+from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
 from types import TracebackType
-from typing import BinaryIO
+from typing import BinaryIO, cast
 
 from pd_xray.storage.errors import InvalidPathError
 
 PART_SUFFIX = ".pd-xray-part"
+BLOCK_BYTES = 256 * 1024
+"""Block size of the read cache of remote files opened with `Storage.open`."""
+CACHE_BLOCKS = 64
+"""Blocks cached per open remote file (16 MB)."""
 
 
 @dataclass(frozen=True)
@@ -114,7 +120,7 @@ class Storage(ABC):
         if entry.is_dir:
             raise IsADirectoryError(f"Is a folder: {path!r} in {self.url}")
         reader = RangeReader(entry.size or 0, lambda offset, size: self.read_range(entry.path, offset, size), path)
-        return io.BufferedReader(reader, 1 << 20)
+        return cast(BinaryIO, reader)
 
     @abstractmethod
     def upload(self, path: str, size: int, modified: float) -> "Upload":
@@ -220,12 +226,26 @@ class Upload(ABC):
 
 
 class RangeReader(io.RawIOBase):
-    """Read-only, seekable raw file built on a `read_range(offset, size) -> bytes` function. Wrap it in
-    `io.BufferedReader` so small reads don't each cost a round trip."""
+    """Read-only, seekable raw file built on a `read_range(offset, size) -> bytes` function, for remote files.
 
-    def __init__(self, size: int, read_range: Callable[[int, int], bytes], name: str) -> None:
+    Small reads come from a cache of aligned blocks (least recently used dropped first), so the many small, scattered
+    reads of format libraries (HDF5 chunk indexes, TIFF headers) cost few round trips. Reads of 4 blocks or more go
+    straight to `read_range` (e.g. frame data). Thread-safe.
+    """
+
+    def __init__(
+        self,
+        size: int,
+        read_range: Callable[[int, int], bytes],
+        name: str,
+        block_bytes: int = BLOCK_BYTES,
+        cache_blocks: int = CACHE_BLOCKS,
+    ) -> None:
         super().__init__()
         self._size, self._read_range, self.name, self._position = size, read_range, name, 0
+        self._block, self._keep = block_bytes, cache_blocks
+        self._cache: OrderedDict[int, bytes] = OrderedDict()
+        self._lock = threading.Lock()
 
     def readable(self) -> bool:
         return True
@@ -237,17 +257,36 @@ class RangeReader(io.RawIOBase):
         return self._position
 
     def seek(self, offset: int, whence: int = io.SEEK_SET) -> int:
-        base = {io.SEEK_SET: 0, io.SEEK_CUR: self._position, io.SEEK_END: self._size}[whence]
-        if base + offset < 0:
-            raise ValueError(f"Negative seek position {base + offset}.")
-        self._position = base + offset
-        return self._position
+        with self._lock:
+            base = {io.SEEK_SET: 0, io.SEEK_CUR: self._position, io.SEEK_END: self._size}[whence]
+            if base + offset < 0:
+                raise ValueError(f"Negative seek position {base + offset}.")
+            self._position = base + offset
+            return self._position
 
     def readinto(self, buffer: memoryview | bytearray) -> int:  # type: ignore[override]
-        size = min(len(buffer), self._size - self._position)
-        if size <= 0:
-            return 0
-        data = self._read_range(self._position, size)
-        buffer[: len(data)] = data
-        self._position += len(data)
-        return len(data)
+        with self._lock:
+            size = min(memoryview(buffer).nbytes, self._size - self._position)
+            if size <= 0:
+                return 0
+            start = self._position
+            data = self._read_range(start, size) if size >= 4 * self._block else self._cached(start, size)
+            memoryview(buffer).cast("B")[: len(data)] = data  # any buffer, e.g. a NumPy array (tifffile)
+            self._position += len(data)
+            return len(data)
+
+    def _cached(self, start: int, size: int) -> bytes:
+        block, cache = self._block, self._cache
+        first, last = start // block, (start + size - 1) // block
+        missing = [i for i in range(first, last + 1) if i not in cache]
+        if missing:  # one request from the first to the last missing block
+            low, high = missing[0] * block, min((missing[-1] + 1) * block, self._size)
+            data = self._read_range(low, high - low)
+            for i in range(missing[0], missing[-1] + 1):
+                cache[i] = data[i * block - low : (i + 1) * block - low]
+        for i in range(first, last + 1):
+            cache.move_to_end(i)
+        joined = b"".join(cache[i] for i in range(first, last + 1))
+        while len(cache) > self._keep:
+            cache.popitem(last=False)
+        return joined[start - first * block : start - first * block + size]

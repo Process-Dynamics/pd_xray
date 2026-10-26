@@ -5,7 +5,7 @@ Format libraries (h5py, tifffile, Pillow) are imported on first use, so each ext
 
 from pd_xray.io.convert import compute_value_range, convert, iter_frames
 from pd_xray.io.dataset import FRAME, ArrayDataset, Dataset
-from pd_xray.io.formats import UnsupportedFormatError, open_dataset, supported_extensions
+from pd_xray.io.formats import FileStore, UnsupportedFormatError, open_dataset, supported_extensions
 from pd_xray.io.mapped import MappedDataset, map_frames
 from pd_xray.io.references import reference_files, reference_frames
 from pd_xray.io.sequence import FileSequence, open_sequence
@@ -16,6 +16,7 @@ __all__ = [
     "ArrayDataset",
     "Dataset",
     "FileSequence",
+    "FileStore",
     "MappedDataset",
     "UnsupportedFormatError",
     "compute_value_range",

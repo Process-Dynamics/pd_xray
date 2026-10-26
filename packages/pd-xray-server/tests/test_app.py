@@ -457,3 +457,70 @@ def test_pipeline_files_and_run_job(client: TestClient, root: Path) -> None:
     job = run_and_wait(client, {"dataset_id": info["id"], "steps": slow, "destination": str(root / "c.h5")}, 2)
     assert job["state"] == "cancelled"
     assert not [p.name for p in root.iterdir() if p.name.startswith(("c.h5", ".c.h5"))]
+
+
+def test_remote_datasets_on_a_connection(
+    client: TestClient, root: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    import yaml
+
+    from pd_xray.io import convert, map_frames, open_dataset, open_sequence, reference_frames
+    from pd_xray.processing import Pipeline, average_frames
+    from pd_xray.server.connections import BROWSER_COOKIE, Connection
+    from pd_xray.storage import LocalStorage
+
+    remote = tmp_path_factory.mktemp("nas")  # outside the allowed folders: only reachable through the connection
+    (remote / "scan" / "dar").mkdir(parents=True)
+    with h5py.File(remote / "scan" / "a.h5", "w") as f:
+        f["images"] = DATA
+    for i in range(3):
+        Image.fromarray(DATA[i]).save(remote / "scan" / f"img_{i}.tif")
+    Image.fromarray(np.full((600, 700), 7, np.uint16)).save(remote / "scan" / "dar" / "d.tif")
+    client.get("/api/info")
+    storage = LocalStorage(remote)
+    nas = Connection("c1", "sftp", "NAS", {}, storage)
+    client.app.state.connections._connections[client.cookies[BROWSER_COOKIE]] = {"c1": nas}  # type: ignore[attr-defined]
+
+    listing = client.get("/api/connections/c1/files", params={"path": "scan"}).json()
+    assert [e["name"] for e in listing["entries"] if e["openable"]] == ["a.h5", "img_0.tif", "img_1.tif", "img_2.tif"]
+    assert listing["sequences"][0]["pattern"] == "img_*.tif"
+    inspected = client.get("/api/inspect", params={"path": "scan/a.h5", "connection": "c1"}).json()
+    assert [d["name"] for d in inspected["datasets"]] == ["images"]
+    assert client.get("/api/inspect", params={"path": "scan/a.h5"}).status_code == 403  # not a server path
+
+    info = client.post("/api/datasets", json={"path": "scan/a.h5", "connection": "c1"}).json()
+    assert info["path"] == "/scan/a.h5" and info["options"] == {"connection": "c1"}
+    assert info["location"] == f"{storage.url}/scan/a.h5"
+    stats = client.get(f"/api/datasets/{info['id']}/frames/2/stats").json()
+    assert stats["max"] == DATA[2].max()
+    seq = client.post("/api/datasets", json={"path": "scan", "pattern": "img_*.tif", "connection": "c1"}).json()
+    assert seq["shape"] == [3, 600, 700]
+
+    # References on the same connection, picked as absolute paths ("/…"), saved relative to the dataset's folder.
+    steps = [{"op": "flat_field", "params": {"dark": "/scan/dar", "flat": None}}]
+    url = f"/api/datasets/{seq['id']}/frames/1/preview"
+    assert client.post(url, json={"steps": steps, "client": "t"}).json()["stats"]["min"] == DATA[1].min() - 7
+    saved = client.post("/api/pipelines", json={"path": str(root / "p.yaml"), "steps": steps, "dataset_id": seq["id"]})
+    assert saved.status_code == 200 and "dark: dar" in (root / "p.yaml").read_text()
+    loaded = client.get("/api/pipelines", params={"path": str(root / "p.yaml")}).json()["steps"]
+    body = {"dataset_id": seq["id"], "steps": loaded, "destination": str(root / "out.tif")}
+    job = run_and_wait(client, body)
+    assert job["state"] == "done", job["error"]
+    record = (root / "out.tif.pipeline.yaml").read_text()
+    assert f"storage: {storage.url}" in record and "source: /scan" in record and "connection" not in record
+
+    # Reproduce from Python with storage=.
+    run = yaml.safe_load(record)["run"]
+    with open_sequence(run["source"], run["pattern"], storage=storage) as ds:
+        resolved = Pipeline.load(root / "out.tif.pipeline.yaml").resolve(
+            lambda ref: average_frames(reference_frames(ref, run["source"], storage))
+        )
+        convert(map_frames(ds, resolved), root / "again.tif")
+    with open_dataset(root / "out.tif") as a, open_dataset(root / "again.tif") as b:
+        np.testing.assert_array_equal(a[...], b[...])
+
+    # Disconnecting closes the datasets read through it.
+    assert client.delete("/api/connections/c1").status_code == 204
+    assert client.get(f"/api/datasets/{info['id']}").status_code == 404
+    gone = client.post("/api/datasets", json={"path": "scan/a.h5", "connection": "c1"})
+    assert gone.status_code == 404 and "connection" in gone.json()["detail"]

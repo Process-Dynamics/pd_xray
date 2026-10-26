@@ -210,7 +210,8 @@ export function DisplayPanel(props: Props) {
 
       <section>
         <h3>Dataset</h3>
-        <div className="info-name" title={dataset.path}>
+        <div className="info-name" title={dataset.location}>
+          {dataset.options.connection && "🔌 "}
           {dataset.name}
           {dataset.options.dataset && <span className="muted"> : {dataset.options.dataset}</span>}
           {dataset.options.pattern && <span className="muted"> / {dataset.options.pattern}</span>}

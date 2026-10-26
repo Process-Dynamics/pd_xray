@@ -1,5 +1,6 @@
 """A sequence of single-frame image files (TIFF/PNG/JPG) opened as one dataset."""
 
+import fnmatch
 import re
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -10,8 +11,9 @@ from numpy.typing import NDArray
 
 from pd_xray.core import CHANNEL, PdXrayError, X, Y
 from pd_xray.io.dataset import FRAME, Dataset, split_key
+from pd_xray.io.formats import FileStore
 
-Reader = Callable[[Path], tuple[NDArray[Any], dict[str, Any]]]
+Reader = Callable[[Path, FileStore | None], tuple[NDArray[Any], dict[str, Any]]]
 
 
 def _frame_reader(path: Path) -> Reader:
@@ -41,17 +43,20 @@ class FileSequence(Dataset):
         files: The files, in frame order.
     """
 
-    def __init__(self, files: Sequence[Path], axes: Sequence[str] | None = None) -> None:
+    def __init__(
+        self, files: Sequence[Path], axes: Sequence[str] | None = None, storage: FileStore | None = None
+    ) -> None:
         if not files:
             raise PdXrayError("No files to open as a sequence.")
         self.files = list(files)
+        self.storage = storage
         self._read = _frame_reader(self.files[0])
-        first, metadata = self._read(self.files[0])
+        first, metadata = self._read(self.files[0], storage)
         default_axes = (FRAME, Y, X) if first.ndim == 2 else (FRAME, Y, X, CHANNEL)
         super().__init__((len(self.files), *first.shape), first.dtype, axes or default_axes, metadata)
 
     def _frame(self, index: int) -> NDArray[Any]:
-        frame = self._read(self.files[index])[0]
+        frame = self._read(self.files[index], self.storage)[0]
         if frame.shape != self.shape[1:] or frame.dtype != self.dtype:
             raise PdXrayError(
                 f"{self.files[index].name} is {frame.shape} {frame.dtype}, but the sequence is "
@@ -75,6 +80,7 @@ def open_sequence(
     source: str | Path | Sequence[str | Path],
     pattern: str = "*",
     axes: Sequence[str] | None = None,
+    storage: FileStore | None = None,
 ) -> FileSequence:
     """Open single-frame files as one dataset.
 
@@ -83,6 +89,7 @@ def open_sequence(
             given order).
         pattern: Glob pattern within the directory, e.g. "*_img.tif" or "*_dar.tif".
         axes: Axis names. Defaults to ("frame", "y", "x").
+        storage: Read the files from here instead of the local disk (see `open_dataset`); paths are in it.
 
     Example:
         >>> images = open_sequence("data/0042", "*_img.tif")
@@ -90,11 +97,19 @@ def open_sequence(
     """
     if isinstance(source, (str, Path)):
         directory = Path(source)
-        if not directory.is_dir():
+        if storage is not None:
+            if not storage.stat(str(directory)).is_dir:
+                raise NotADirectoryError(f"Not a directory: {directory}")
+            found = [
+                Path(e.path) for e in storage.list(str(directory)) if not e.is_dir and fnmatch.fnmatch(e.name, pattern)
+            ]
+        elif not directory.is_dir():
             raise NotADirectoryError(f"Not a directory: {directory}")
-        files = sorted((p for p in directory.glob(pattern) if p.is_file()), key=natural_key)
+        else:
+            found = [p for p in directory.glob(pattern) if p.is_file()]
+        files = sorted(found, key=natural_key)
         if not files:
             raise PdXrayError(f"No files match '{pattern}' in {directory}.")
     else:
         files = [Path(p) for p in source]
-    return FileSequence(files, axes)
+    return FileSequence(files, axes, storage)

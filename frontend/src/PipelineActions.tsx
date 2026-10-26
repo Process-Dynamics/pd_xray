@@ -8,7 +8,7 @@ import { FileDialog } from "./FileDialog";
 
 interface Props {
   dataset: DatasetInfo;
-  datasetFolder: string;
+  datasetFolder: string | null; // where the dialogs open; null for the allowed folders (e.g. a remote dataset)
   steps: Step[];
   /** Processed frame size and contrast from the latest preview, for defaults; null if not previewed yet. */
   processed: { height: number; width: number; vmin: number; vmax: number } | null;

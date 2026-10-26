@@ -31,11 +31,6 @@ SIDECAR_SUFFIX = ".pipeline.yaml"
 _PACKAGES = ("pd-xray-core", "pd-xray-io", "pd-xray-processing", "pd-xray-server")
 
 
-def dataset_folder(entry: OpenDataset) -> Path:
-    """Folder that relative references start from: the sequence's folder, or the file's."""
-    return entry.path if entry.path.is_dir() else entry.path.parent
-
-
 def save_pipeline(path: Path, steps: Sequence[Any], base: Path | None, overwrite: bool = False) -> Path:
     """Save steps as a pipeline file; references inside `base` (the dataset's folder) are stored relative to it.
 
@@ -118,13 +113,14 @@ def run_pipeline(
     """
     started = time.monotonic()
     pipeline = Pipeline.from_dict({"pd_xray_pipeline": 1, "steps": list(steps)})
-    base = dataset_folder(entry)
+    base = entry.folder
     if progress is not None:
         progress(Progress(0, None, "Loading references"))
-    resolved = pipeline.resolve(lambda reference: store.reference(reference, base, cancel))
+    resolved = pipeline.resolve(lambda reference: store.reference(reference, entry, cancel))
     record = {
         "source": str(entry.path),
-        **entry.options,
+        **({} if entry.storage is None else {"storage": entry.storage.url}),  # no credentials in the URL
+        **{k: v for k, v in entry.options.items() if k != "connection"},
         "frames": None if frames is None else [frames.start, frames.stop, frames.step],
         "output": destination.name,
         "dtype": dtype,

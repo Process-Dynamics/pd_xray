@@ -3,27 +3,28 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-import { api, type Connection, type Hdf5Dataset, type Listing, type Location } from "./api";
+import { api, type Connection, type Hdf5Dataset, type Listing, type Location, type OpenOptions } from "./api";
 import { ConnectionDialog } from "./ConnectionDialog";
 import { CopyDialog } from "./CopyDialog";
 import { formatBytes } from "./format";
 
-export interface OpenRequest {
-  path: string;
-  dataset?: string;
-  pattern?: string;
+export interface OpenRequest extends OpenOptions {
+  path: string; // on a connection: from its root
   label: string;
 }
 
 interface Props {
   track: <T>(label: string, work: Promise<T>) => Promise<T | undefined>;
   onOpen: (request: OpenRequest) => void;
-  openPath: string | null;
+  /** The open dataset's path and connection, to highlight it. */
+  opened: { path: string; connection?: string } | null;
+  /** A connection was closed; the server has closed the datasets read through it. */
+  onDisconnected: (connectionId: string) => void;
 }
 
 const MAX_ROWS = 2000; // keep huge folders responsive; the filter finds the rest
 
-export function FileBrowser({ track, onOpen, openPath }: Props) {
+export function FileBrowser({ track, onOpen, opened, onDisconnected }: Props) {
   const [listing, setListing] = useState<Listing | null>(null);
   const [filter, setFilter] = useState("");
   const [picker, setPicker] = useState<{ path: string; datasets: Hdf5Dataset[] } | null>(null);
@@ -69,6 +70,7 @@ export function FileBrowser({ track, onOpen, openPath }: Props) {
   const disconnect = async (connection: Connection) => {
     await track(`Disconnecting ${connection.name}`, api.disconnect(connection.id));
     setConnections((list) => list.filter((c) => c.id !== connection.id));
+    onDisconnected(connection.id);
   };
 
   useEffect(() => {
@@ -76,13 +78,22 @@ export function FileBrowser({ track, onOpen, openPath }: Props) {
   }, [go]);
 
   const openFile = async (path: string, name: string) => {
-    const inspection = await track(`Inspecting ${name}`, api.inspect(path));
+    const connection = remote?.id;
+    const inspection = await track(`Inspecting ${name}`, api.inspect(path, connection));
     if (!inspection) return;
-    if (inspection.format !== "hdf5") return onOpen({ path, label: name });
+    if (inspection.format !== "hdf5") return onOpen({ path, connection, label: name });
     const images = inspection.datasets.filter((d) => d.is_image);
-    if (images.length === 1) return onOpen({ path, dataset: images[0]!.name, label: `${name}:${images[0]!.name}` });
+    if (images.length === 1) {
+      return onOpen({ path, connection, dataset: images[0]!.name, label: `${name}:${images[0]!.name}` });
+    }
     setPicker({ path, datasets: inspection.datasets });
   };
+  /** Whether `path` in the folder shown is the open dataset (remote dataset paths start with "/"). */
+  const isOpen = (path: string) =>
+    opened !== null &&
+    (remote
+      ? opened.connection === remote.id && opened.path === `/${path}`
+      : !opened.connection && opened.path === path);
 
   const needle = filter.trim().toLowerCase();
   const entries = (listing?.entries ?? []).filter((e) => e.name.toLowerCase().includes(needle));
@@ -131,7 +142,14 @@ export function FileBrowser({ track, onOpen, openPath }: Props) {
               className="row"
               disabled={!d.is_image}
               title={d.warnings.join("\n") || undefined}
-              onClick={() => onOpen({ path: picker.path, dataset: d.name, label: `${name(picker.path)}:${d.name}` })}
+              onClick={() =>
+                onOpen({
+                  path: picker.path,
+                  connection: remote?.id,
+                  dataset: d.name,
+                  label: `${name(picker.path)}:${d.name}`,
+                })
+              }
             >
               <span className="row-name">{d.name}</span>
               <span className="row-meta">
@@ -165,7 +183,9 @@ export function FileBrowser({ track, onOpen, openPath }: Props) {
             key={s.pattern}
             className="row row-sequence"
             title={`Open the ${s.count} files matching ${s.pattern} as one dataset`}
-            onClick={() => onOpen({ path: listing!.path!, pattern: s.pattern, label: s.pattern })}
+            onClick={() =>
+              onOpen({ path: listing!.path ?? "", connection: remote?.id, pattern: s.pattern, label: s.pattern })
+            }
           >
             <span className="row-name">▦ {s.pattern}</span>
             <span className="row-meta">{s.count} files</span>
@@ -184,9 +204,9 @@ export function FileBrowser({ track, onOpen, openPath }: Props) {
             ) : (
               <button
                 key={e.path}
-                className={`row ${e.path === openPath ? "row-open" : ""}`}
+                className={`row ${isOpen(e.path) ? "row-open" : ""}`}
                 disabled={!e.openable}
-                title={remote ? "Opening files from a connection isn't supported yet" : undefined}
+                title={remote ? `Read from ${remote.name} as needed (not copied)` : undefined}
                 onClick={() => void openFile(e.path, e.name)}
               >
                 <span className="row-name">{e.name}</span>

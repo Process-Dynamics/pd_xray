@@ -64,11 +64,19 @@ export interface Inspection {
   datasets: Hdf5Dataset[];
 }
 
+/** How a dataset is opened: HDF5 `dataset`, sequence `pattern`, and `connection` for a file on a NAS/S3. */
+export interface OpenOptions {
+  dataset?: string;
+  pattern?: string;
+  connection?: string;
+}
+
 export interface DatasetInfo {
   id: string;
   path: string;
   name: string;
-  options: { dataset?: string; pattern?: string };
+  options: OpenOptions;
+  location: string; // full location for display: a server path, or the connection's URL + path
   shape: number[];
   dtype: string;
   axes: string[];
@@ -247,8 +255,9 @@ export const api = {
     request<Connection>("POST", "/api/connections", { kind, name, settings, credentials }),
   disconnect: (id: string) => request<void>("DELETE", `/api/connections/${id}`),
   listRemote: (id: string, path: string) => request<Listing>("GET", `/api/connections/${id}/files?${query({ path })}`),
-  inspect: (path: string) => request<Inspection>("GET", `/api/inspect?${query({ path })}`),
-  open: (path: string, options: { dataset?: string; pattern?: string } = {}) =>
+  inspect: (path: string, connection?: string) =>
+    request<Inspection>("GET", `/api/inspect?${query({ path, ...(connection ? { connection } : {}) })}`),
+  open: (path: string, options: OpenOptions = {}) =>
     request<DatasetInfo>("POST", "/api/datasets", { path, ...options }),
   dataset: (id: string) => request<DatasetInfo>("GET", `/api/datasets/${id}`),
   close: (id: string) => request<void>("DELETE", `/api/datasets/${id}`),

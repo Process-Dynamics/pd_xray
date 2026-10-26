@@ -10,32 +10,40 @@ import { formatBytes } from "./format";
 interface Props {
   title: string;
   start: string; // folder to open first
+  connection?: string; // browse this connection (paths from its root) instead of the server's folders
   onPick: (reference: Reference) => void;
   onCancel: () => void;
 }
 
-export function ReferencePicker({ title, start, onPick, onCancel }: Props) {
+export function ReferencePicker({ title, start, connection, onPick: pick, onCancel }: Props) {
   const [listing, setListing] = useState<Listing | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [filter, setFilter] = useState("");
   const [error, setError] = useState<string | null>(null);
 
-  const go = useCallback(async (path: string | null): Promise<boolean> => {
-    try {
-      setListing(await api.list(path));
-      setSelected(new Set());
-      setFilter("");
-      setError(null);
-      return true;
-    } catch (e) {
-      setError(e instanceof ApiError ? e.message : String(e));
-      return false;
-    }
-  }, []);
+  const go = useCallback(
+    async (path: string | null): Promise<boolean> => {
+      try {
+        setListing(await (connection ? api.listRemote(connection, path ?? "") : api.list(path)));
+        setSelected(new Set());
+        setFilter("");
+        setError(null);
+        return true;
+      } catch (e) {
+        setError(e instanceof ApiError ? e.message : String(e));
+        return false;
+      }
+    },
+    [connection],
+  );
 
   useEffect(() => {
-    void go(start).then((ok) => ok || go(null)); // e.g. a folder that was moved: start from the allowed folders
-  }, [go, start]);
+    // e.g. a folder that was moved: start from the allowed folders (or the connection's root)
+    void go(connection ? start.replace(/^\/+/, "") : start).then((ok) => ok || go(null));
+  }, [go, start, connection]);
+  // A connection's paths are returned from its root, starting with "/" (relative ones mean the dataset's folder).
+  const onPick = (reference: Reference) =>
+    pick(!connection ? reference : typeof reference === "string" ? `/${reference}` : reference.map((p) => `/${p}`));
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onCancel();
@@ -43,6 +51,7 @@ export function ReferencePicker({ title, start, onPick, onCancel }: Props) {
     return () => window.removeEventListener("keydown", onKey);
   }, [onCancel]);
 
+  const where = connection ? `/${listing?.path ?? ""}` : (listing?.path ?? "Allowed folders");
   const needle = filter.trim().toLowerCase();
   const entries = (listing?.entries ?? []).filter((e) => e.name.toLowerCase().includes(needle));
   const files = (listing?.entries ?? []).filter((e) => e.kind === "file" && e.openable);
@@ -59,12 +68,12 @@ export function ReferencePicker({ title, start, onPick, onCancel }: Props) {
     <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onCancel()}>
       <div className="modal" role="dialog" aria-label={title}>
         <div className="modal-title">{title}</div>
-        <div className="browser-path" title={listing?.path ?? "Allowed folders"}>
+        <div className="browser-path" title={where}>
           <button disabled={!listing?.path} onClick={() => void go(listing?.parent ?? null)} title="Up one folder">
             ↑
           </button>
           <span>
-            <bdi>{listing?.path ?? "Allowed folders"}</bdi>
+            <bdi>{where}</bdi>
           </span>
         </div>
         <div className="modal-tools">

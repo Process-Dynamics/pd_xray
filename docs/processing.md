@@ -135,6 +135,7 @@ from pd_xray.processing import Pipeline, average_frames
 record = Path("out/scan_processed.tif.pipeline.yaml")
 run = yaml.safe_load(record.read_text())["run"]
 pipeline = Pipeline.load(record)                       # ignores the run section
+# A dataset on a NAS/S3 has run["storage"] (its URL): open that storage and pass storage= to open_* and reference_frames.
 with open_dataset(run["source"], dataset=run["dataset"]) as ds:  # TIFF: no dataset=; folder: open_sequence(source, pattern)
     base = Path(run["source"]).parent                  # the dataset's folder (the folder itself for a sequence)
     resolved = pipeline.resolve(lambda ref: average_frames(reference_frames(ref, base)))

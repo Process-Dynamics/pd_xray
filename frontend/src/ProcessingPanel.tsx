@@ -20,6 +20,7 @@ interface Props {
   showProcessed: boolean;
   preview: Preview | null;
   datasetFolder: string;
+  connection?: string; // the dataset's connection, for a dataset on a NAS/S3: references are picked there
   /** Contrast on screen: a new Tone step starts with it as its black/white points, so the frame looks the same. */
   displayRange: { vmin: number; vmax: number };
   onSteps: (steps: EditableStep[]) => void;
@@ -98,6 +99,7 @@ function ParamControl(props: {
   param: OperationParam;
   value: unknown;
   datasetFolder: string;
+  connection?: string;
   onChange: (value: unknown) => void;
 }) {
   const { param, value, onChange } = props;
@@ -129,6 +131,7 @@ function ParamControl(props: {
           {picking && (
             <ReferencePicker
               title={`${param.name}: ${param.description}`}
+              connection={props.connection}
               start={
                 typeof value !== "string"
                   ? props.datasetFolder
@@ -255,6 +258,7 @@ export function ProcessingPanel(props: Props) {
                         param={param}
                         value={step.params[param.name]}
                         datasetFolder={props.datasetFolder}
+                        connection={props.connection}
                         onChange={(value) => update(index, { params: { ...step.params, [param.name]: value } })}
                       />
                     </label>

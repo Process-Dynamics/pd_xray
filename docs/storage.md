@@ -64,6 +64,15 @@ with nas.open("2026/scan_0042/a.tif") as f:   # seekable: reads only the bytes y
 nas.read_range("2026/scan_0042/a.tif", offset=0, size=8)   # thread-safe range read
 ```
 
+Remote files from `open` keep a small read cache (256 KB blocks, 16 MB per open file), so the many small reads
+of format libraries cost few round trips; large reads (frames) go straight through. To open image data on a NAS or
+S3 without copying it, pass the storage to `pd_xray.io` (see [io](io.md#files-on-a-nas-or-s3)):
+
+```python
+from pd_xray.io import open_dataset
+ds = open_dataset("2026/scan_0042.h5", storage=nas)   # reads only the frames you index
+```
+
 ## Copying
 
 `copy` copies a file, or a folder with everything below it, between any two storages (also within one).

@@ -31,7 +31,7 @@ from pd_xray.server.datasets import DatasetStore, NotFoundError, jsonable
 from pd_xray.server.jobs import JobManager
 from pd_xray.server.paths import AccessDeniedError, list_directory, resolve_path
 from pd_xray.server.render import MEDIA_TYPES, ImageFormat, parse_tone
-from pd_xray.server.runs import PIPELINE_EXTENSIONS, check_run, dataset_folder, run_pipeline, save_pipeline
+from pd_xray.server.runs import PIPELINE_EXTENSIONS, check_run, run_pipeline, save_pipeline
 from pd_xray.server.settings import Settings
 from pd_xray.storage import HostKeyError, LocalStorage, Storage, copy, join_path, normalise_path
 
@@ -43,9 +43,11 @@ STATIC_DIR = Path(__file__).parent / "static"
 
 
 class OpenRequest(BaseModel):
-    """Body of POST /api/datasets. `dataset` is for HDF5 files, `pattern` for folders (file sequences)."""
+    """Body of POST /api/datasets. `dataset` is for HDF5 files, `pattern` for folders (file sequences). With
+    `connection`, `path` is on that connection (from its root) and is read lazily from there."""
 
     path: str
+    connection: str | None = None
     dataset: str | None = None
     pattern: str | None = None
     axes: list[str] | None = None
@@ -199,6 +201,11 @@ def create_app(settings: Settings) -> FastAPI:
 
     @app.delete("/api/connections/{connection_id}", status_code=204)
     def remove_connection(request: Request, connection_id: str) -> None:
+        """Disconnect. Datasets opened from it are closed."""
+        connections.get(request.state.browser, connection_id)  # 404 for another browser's connection
+        for entry in store.list():
+            if entry.options.get("connection") == connection_id:
+                store.close(entry.id)
         connections.remove(request.state.browser, connection_id)
 
     @app.get("/api/connections/{connection_id}/files")
@@ -208,11 +215,18 @@ def create_app(settings: Settings) -> FastAPI:
         return list_remote(connection, normalise_path(path), show_hidden)
 
     @app.get("/api/inspect")
-    def inspect(path: str) -> dict[str, Any]:
-        """What a file contains before opening it. HDF5: every dataset, with `is_image` marking candidates."""
-        resolved = resolve_path(path, settings.roots)
-        if not resolved.is_file():
-            raise FileNotFoundError(f"No such file: {resolved}")
+    def inspect(request: Request, path: str, connection: str | None = None) -> dict[str, Any]:
+        """What a file contains before opening it. HDF5: every dataset, with `is_image` marking candidates. With
+        `connection`, `path` is on that connection."""
+        storage = None if connection is None else connections.get(request.state.browser, connection).storage
+        if storage is None:
+            resolved = resolve_path(path, settings.roots)
+            if not resolved.is_file():
+                raise FileNotFoundError(f"No such file: {resolved}")
+        else:
+            resolved = Path("/" + normalise_path(path))
+            if storage.stat(str(resolved)).is_dir:
+                raise IsADirectoryError(f"Is a folder: {resolved}")
         if resolved.suffix.lower() not in _HDF5_EXTENSIONS:
             return {"path": str(resolved), "format": resolved.suffix.lower().lstrip("."), "datasets": []}
         datasets = [
@@ -226,15 +240,20 @@ def create_app(settings: Settings) -> FastAPI:
                 "attrs": jsonable(d.attrs),
                 "warnings": list(d.warnings),
             }
-            for d in inspect_hdf5(resolved)
+            for d in inspect_hdf5(resolved, storage)
         ]
         return {"path": str(resolved), "format": "hdf5", "datasets": datasets}
 
     @app.post("/api/datasets")
-    def open_dataset(request: OpenRequest) -> dict[str, Any]:
-        """Open a file, or a folder as a sequence of single-frame files."""
-        path = resolve_path(request.path, settings.roots)
-        return store.info(store.open(path, request.dataset, request.pattern, request.axes))
+    def open_dataset(http: Request, request: OpenRequest) -> dict[str, Any]:
+        """Open a file, or a folder as a sequence of single-frame files, on the server or on a connection."""
+        if request.connection is None:
+            path = resolve_path(request.path, settings.roots)
+            return store.info(store.open(path, request.dataset, request.pattern, request.axes))
+        storage = connections.get(http.state.browser, request.connection).storage
+        path = Path("/" + normalise_path(request.path))
+        entry = store.open(path, request.dataset, request.pattern, request.axes, storage, request.connection)
+        return store.info(entry)
 
     @app.get("/api/datasets")
     def list_datasets() -> list[dict[str, Any]]:
@@ -365,7 +384,7 @@ def create_app(settings: Settings) -> FastAPI:
         resolved = resolve_path(request.path, settings.roots)
         if not resolved.parent.is_dir():
             raise NotADirectoryError(f"Not a folder: {resolved.parent}")
-        base = dataset_folder(store.get(request.dataset_id)) if request.dataset_id else None
+        base = store.get(request.dataset_id).folder if request.dataset_id else None
         return {"path": str(save_pipeline(resolved, request.steps, base, request.overwrite))}
 
     @app.post("/api/jobs/run")

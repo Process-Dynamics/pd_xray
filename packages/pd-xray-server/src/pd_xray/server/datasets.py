@@ -17,12 +17,14 @@ from numpy.typing import NDArray
 
 from pd_xray.core import CHANNEL, CancelToken, PdXrayError, Progress, frame_axes
 from pd_xray.io import Dataset, open_dataset, open_sequence
+from pd_xray.io import reference_files as named_files
 from pd_xray.processing import Pipeline
 from pd_xray.processing.pipeline import Reference
 from pd_xray.server.cache import LRUCache
 from pd_xray.server.colormaps import COLORMAPS
 from pd_xray.server.references import average_files, reference_files
 from pd_xray.server.render import ImageFormat, encode, frame_stats, halve, histogram, level_count, to_uint8
+from pd_xray.storage import Storage
 
 _KEEP_PIPELINES = 32  # registered preview pipelines kept; reference frames are shared through the cache
 
@@ -56,15 +58,20 @@ class OpenDataset:
 
     Attributes:
         id: Server-assigned id used in URLs.
-        path: File, or directory for a file sequence.
+        path: File, or directory for a file sequence. On a connection: its path from the connection's root, starting
+            with "/".
         dataset: The lazy dataset.
-        options: How it was opened (`dataset`, `pattern`), so the UI can show and repeat it.
+        options: How it was opened (`dataset`, `pattern`, `connection`), so the UI can show and repeat it.
+        folder: Where relative references start: the sequence's folder, or the file's.
+        storage: The connection's storage for a remote dataset, else None.
     """
 
     id: str
     path: Path
     dataset: Dataset
     options: dict[str, Any]
+    folder: Path
+    storage: Storage | None = None
 
     @property
     def frame_axes(self) -> tuple[str, ...]:
@@ -94,33 +101,45 @@ class DatasetStore:
         self._lock = threading.Lock()
 
     def open(
-        self, path: Path, dataset: str | None = None, pattern: str | None = None, axes: Sequence[str] | None = None
+        self,
+        path: Path,
+        dataset: str | None = None,
+        pattern: str | None = None,
+        axes: Sequence[str] | None = None,
+        storage: Storage | None = None,
+        connection: str | None = None,
     ) -> OpenDataset:
         """Open a file, or a directory as a file sequence.
 
         Args:
-            path: Resolved file or directory.
+            path: Resolved file or directory, or a path on `storage` starting with "/".
             dataset: HDF5 dataset path inside the file.
             pattern: Glob pattern for a directory, e.g. "*_img.tif". Defaults to "*".
             axes: Axis names overriding the detected ones.
+            storage: Read from this connection's storage (lazily: only the bytes needed) instead of the disk.
+            connection: The connection's id, recorded in `options`.
 
         Raises:
             PdXrayError: If the file can't be opened as given (reasons in the message).
         """
-        if path.is_dir():
+        is_dir = storage.stat(str(path)).is_dir if storage is not None else path.is_dir()
+        if is_dir:
             if dataset is not None:
                 raise PdXrayError("'dataset' applies to HDF5 files, not to folders.")
-            opened: Dataset = open_sequence(path, pattern or "*", axes)
+            opened: Dataset = open_sequence(path, pattern or "*", axes, storage)
             options: dict[str, Any] = {"pattern": pattern or "*"}
         else:
             if pattern is not None:
                 raise PdXrayError("'pattern' applies to folders (file sequences), not to single files.")
             options = {} if dataset is None else {"dataset": dataset}
             try:
-                opened = open_dataset(path, axes, **options)
+                opened = open_dataset(path, axes, storage, **options)
             except TypeError:
                 raise PdXrayError(f"'dataset' applies to HDF5 files, not to '{path.name}'.") from None
-        entry = OpenDataset(uuid.uuid4().hex[:12], path, opened, options)
+        if connection is not None:
+            options["connection"] = connection
+        folder = path if is_dir else path.parent
+        entry = OpenDataset(uuid.uuid4().hex[:12], path, opened, options, folder, storage)
         with self._lock:
             self._open[entry.id] = entry
         return entry
@@ -169,6 +188,7 @@ class DatasetStore:
             "id": entry.id,
             "path": str(entry.path),
             "name": entry.path.name,
+            "location": str(entry.path) if entry.storage is None else f"{entry.storage.url}{entry.path}",
             "options": entry.options,
             "shape": list(ds.shape),
             "dtype": str(ds.dtype),
@@ -234,21 +254,27 @@ class DatasetStore:
             if pipeline_id in self._pipelines:
                 self._pipelines.move_to_end(pipeline_id)
                 return pipeline_id
-        base = entry.path if entry.path.is_dir() else entry.path.parent
-        resolved = pipeline.resolve(lambda reference: self.reference(reference, base, cancel))
+        resolved = pipeline.resolve(lambda reference: self.reference(reference, entry, cancel))
         with self._lock:
             self._pipelines[pipeline_id] = (entry.id, resolved)
             while len(self._pipelines) > _KEEP_PIPELINES:
                 self._pipelines.popitem(last=False)
         return pipeline_id
 
-    def reference(self, reference: Reference, base: Path, cancel: CancelToken | None = None) -> NDArray[Any]:
-        """Averaged reference frame (see `references.py`). Cached until a file changes."""
-        files = reference_files(reference, base, self.roots)
-        key = ("reference", tuple(files), tuple(f.stat().st_mtime_ns for f in files))
+    def reference(self, reference: Reference, entry: OpenDataset, cancel: CancelToken | None = None) -> NDArray[Any]:
+        """Averaged reference frame (see `references.py`) for a dataset: relative paths start at its folder; a remote
+        dataset's references are on its connection. Cached until a file changes."""
+        storage = entry.storage
+        if storage is None:
+            files = reference_files(reference, entry.folder, self.roots)
+            changed: tuple[Any, ...] = tuple(f.stat().st_mtime_ns for f in files)
+        else:
+            files = named_files(reference, entry.folder, storage)
+            changed = tuple((e.size, e.modified) for e in (storage.stat(str(f)) for f in files))
+        key = ("reference", entry.options.get("connection"), tuple(files), changed)
 
         def load() -> NDArray[Any]:
-            array = average_files(files, cancel)
+            array = average_files(files, cancel, storage)
             array.flags.writeable = False
             return array
 

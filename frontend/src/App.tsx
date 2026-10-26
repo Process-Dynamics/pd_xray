@@ -105,7 +105,7 @@ export function App() {
 
   const open = useCallback(
     async (request: OpenRequest) => {
-      const options = { dataset: request.dataset, pattern: request.pattern };
+      const options = { dataset: request.dataset, pattern: request.pattern, connection: request.connection };
       const opened = await track(`Opening ${request.label}`, api.open(request.path, options));
       if (!opened) return;
       const first = opened.frame_shape.map(() => 0);
@@ -259,7 +259,14 @@ export function App() {
 
   return (
     <div className="app">
-      <FileBrowser track={track} onOpen={(r) => void open(r)} openPath={dataset?.path ?? null} />
+      <FileBrowser
+        track={track}
+        onOpen={(r) => void open(r)}
+        opened={dataset ? { path: dataset.path, connection: dataset.options.connection } : null}
+        onDisconnected={(id) => {
+          if (dataset?.options.connection === id) setDataset(null);
+        }}
+      />
       <main className="main">
         <Viewer
           view={view}
@@ -307,6 +314,7 @@ export function App() {
                 showProcessed={processing}
                 preview={processing ? currentPreview : null}
                 datasetFolder={datasetFolder}
+                connection={dataset.options.connection}
                 displayRange={activeDisplay}
                 onSteps={(next) => {
                   setSteps(next);
@@ -316,7 +324,7 @@ export function App() {
               />
               <PipelineActions
                 dataset={dataset}
-                datasetFolder={datasetFolder}
+                datasetFolder={dataset.options.connection ? null : datasetFolder}
                 steps={apiSteps}
                 processed={processedDefaults}
                 onLoaded={(loaded) => {

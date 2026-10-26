@@ -176,3 +176,26 @@ def test_upload_cancel_resume(
         assert (server.root / "copied" / "scan" / "a.bin").read_bytes() == data
         with pytest.raises(StorageError, match="into itself"):
             copy(storage, "up", storage, "up/inner")
+
+
+def test_datasets_open_lazily_over_sftp(server: _Sftp) -> None:
+    h5py = pytest.importorskip("h5py")
+    pytest.importorskip("tifffile")
+    import numpy as np
+
+    from pd_xray.io import ArrayDataset, convert, open_dataset
+
+    data = np.arange(40 * 300 * 200, dtype=np.uint16).reshape(40, 300, 200)  # 4.8 MB
+    with h5py.File(server.root / "scans" / "s.h5", "w") as f:
+        f.create_dataset("images", data=data, chunks=(1, 300, 200))
+    convert(ArrayDataset(data, ("angle", "y", "x")), server.root / "scans" / "s.tif")
+    with _storage(server) as storage:
+        reads: list[int] = []
+        read_range = storage.read_range
+        storage.read_range = lambda path, offset, size: reads.append(size) or read_range(path, offset, size)  # type: ignore[method-assign]
+        for name in ("scans/s.h5", "scans/s.tif"):
+            reads.clear()
+            with open_dataset(name, storage=storage) as ds:
+                np.testing.assert_array_equal(ds[30], data[30])
+                np.testing.assert_array_equal(ds[1:3, 10], data[1:3, 10])
+            assert sum(reads) < data.nbytes / 3, name  # 3 frames, metadata, 256 KB blocks: not the whole file

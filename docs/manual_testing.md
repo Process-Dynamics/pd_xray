@@ -408,13 +408,44 @@ Measured (idle machine, 112 cores): median 3 + crop on 2304 × 4096 frames, 1000
 out) in 45–50 s from the UI, 48 s from Python, identical. Threads: 1 → 0.9 frames/s, 16 → 12.8, 32 → 17.4 (Python,
 300 frames). New-frame tiles during a run 71 ms (54 ms idle).
 
-## 16. Python 3.10 (Jetson-like)
+## 16. Open datasets on the NAS (2.4a)
+
+Web UI with your real NAS connected (§12). Put (or find) on the NAS a large HDF5 file and a TIFF sequence with
+`dar/` and `flat/` folders, e.g. copies of `MG36212_1_0091_narrowfov_000000.h5` and `24_I20231030_1/0042` (⧉).
+
+- In the NAS listing, image files are no longer greyed out (tooltip "Read from … as needed"), and sequences show
+  as `▦`. Click the HDF5 file: it opens in about a second; the Dataset panel shows 🔌 and the `sftp://…` location
+  on hover. Step with →: note the time per frame (local test server: 0.1–0.4 s; the next frame is prefetched).
+  Watch the NAS's network use in DSM: only about one frame per step, not the whole file.
+- Open the sequence. Flat/dark correction → Choose… opens in the scan's folder on the NAS → `dar` → Use this
+  folder; flat → `flat` → Select shown → Use 3. Add median 3. Save… (opens in the server's folders): the file says
+  `dark: dar`, `flat: [flat/…]`. Run… into a server folder; hover the finished job.
+- Its `.pipeline.yaml` has `storage: sftp://USER@NAS…` (no password) and `source: /…`. Reproduce in Python:
+
+```python
+nas = SFTPStorage("NAS_HOST", "USER", password=getpass.getpass(), root="/volume1/SHARE")
+run = yaml.safe_load(open("OUT.tif.pipeline.yaml"))["run"]
+pipeline = Pipeline.load("OUT.tif.pipeline.yaml")
+with open_sequence(run["source"], run["pattern"], storage=nas) as ds:
+    resolved = pipeline.resolve(lambda ref: average_frames(reference_frames(ref, run["source"], nas)))
+    convert(map_frames(ds, resolved, workers=8), "again.tif")      # identical to OUT.tif
+```
+
+- × Disconnect at the top level while a NAS dataset is open: the panel shows "No dataset open.". Reopening a NAS
+  file after a server restart says to connect again.
+
+Measured (local OpenSSH stand-in, machine fully loaded by another job): 99 GB HDF5 inspect 0.38 s, open 0.6 s,
+new frame 0.3–0.6 s (whole-frame tile); arrow steps in the UI 81–330 ms; 0042 sequence frame ~0.36 s; flat field
+with 12 references from the NAS: first preview 6.4 s (loads them), then 0.1 s per step; 14-frame run 3–11 s. UI run
+= Python over SFTP = Python on local copies (identical).
+
+## 17. Python 3.10 (Jetson-like)
 
 ```bash
 python3 -m venv /tmp/pd310 && /tmp/pd310/bin/pip install ./packages/pd-xray-core "./packages/pd-xray-storage[all]" "./packages/pd-xray-io[all]" ./packages/pd-xray-processing ./packages/pd-xray-server fastapi==0.142.2 uvicorn==0.54.0 websockets==16.1.1 httpx==0.28.1 moto==5.2.4 pytest
 /tmp/pd310/bin/pip list | grep -iE "numpy|h5py|tifffile|pillow|scipy|scikit|yaml|fastapi|uvicorn|websockets"
 # 1.26.4, 3.16.0, 2025.5.10, 12.3.0, 1.15.3, 0.25.2, 6.0.3, 0.142.2, 0.54.0, 16.1.1
-cd /tmp && /tmp/pd310/bin/python -m pytest -q --import-mode=importlib ~/pd_xray/packages   # 93 passed
+cd /tmp && /tmp/pd310/bin/python -m pytest -q --import-mode=importlib ~/pd_xray/packages   # 96 passed
 ```
 
 Cleanup: `rm -rf /tmp/pd_xray_manual /tmp/pd310`.
