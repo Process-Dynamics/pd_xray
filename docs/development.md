@@ -61,9 +61,13 @@ The five packages are released together, with the same version, each requiring i
    ```
 
 3. Tag the commit (`vX.Y.Z`), create a GitHub release for the tag, and attach the five `dist/*.whl` files.
+   `dist/` is ignored by git; the wheels live only in the release.
+4. Update the version in the README and [installation](installation.md) links (`expanded_assets/vX.Y.Z`).
 
 Users then install with `--find-links` (see [installation](installation.md#from-a-release-other-projects)).
 
-## Manual checks on real data
+## Checks on real data
 
-[`manual_testing.md`](manual_testing.md) walks through every feature with the sample files in `data/` (not in git).
+Tests use synthetic data, so before a release also try the main features on real files in `data/` (not in git) and,
+if available, the NAS and an S3 bucket: open an HDF5 file and a `▦` sequence, scrub, add steps, Run…, a copy that is
+cancelled and resumed. Then install the new wheels in a fresh Python 3.10 venv (see above) and run `pip check`.

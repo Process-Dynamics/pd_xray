@@ -2,9 +2,8 @@
 
 Lazy readers and writers for HDF5, TIFF, PNG and JPG, folders of single images, and format conversion.
 
-```bash
-pip install "pd-xray-io[all]"      # or [hdf5], [tiff], [png]
-```
+Install from a GitHub release with `pip install --find-links …`: see the [main
+README](../../README.md#2-python-packages). Extras: `[hdf5]`, `[tiff]`, `[png]` or `[all]`.
 
 ```python
 from pd_xray.io import open_dataset

@@ -8,4 +8,7 @@ from pd_xray.processing import Pipeline, Step
 out = Pipeline([Step("median", {"size": 3})])(frame)
 ```
 
+Install from a GitHub release with `pip install --find-links …`: see the [main
+README](../../README.md#2-python-packages).
+
 Guide: [docs/processing.md](../../docs/processing.md).
