@@ -47,14 +47,14 @@ Each GitHub release has the five packages as wheels. The packages aren't on PyPI
 files with `--find-links`; their dependencies (NumPy, h5py, …) come from PyPI as usual:
 
 ```bash
-REL=https://github.com/Process-Dynamics/pd_xray/releases/expanded_assets/v0.1.0
+REL=https://github.com/Process-Dynamics/pd_xray/releases/expanded_assets/v0.2.0
 pip install --find-links $REL "pd-xray-io[hdf5,tiff]"          # e.g. read HDF5 and TIFF only (pulls pd-xray-core)
 pip install --find-links $REL pd-xray-processing "pd-xray-storage[sftp]"
 pip install --find-links $REL pd-xray-server                   # the whole web app
 ```
 
-In another project's `requirements.txt`, put `--find-links https://github.com/…/expanded_assets/v0.1.0` on the first
-line, then e.g. `pd-xray-io[hdf5]~=0.1.0`. The packages require each other at the same minor version, so a release's
+In another project's `requirements.txt`, put `--find-links https://github.com/…/expanded_assets/v0.2.0` on the first
+line, then e.g. `pd-xray-io[hdf5]~=0.2.0`. The packages require each other at the same minor version, so a release's
 packages always install together.
 
 ## Only the libraries, from a clone

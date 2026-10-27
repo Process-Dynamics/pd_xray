@@ -4,12 +4,12 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pd-xray-io"
-version = "0.1.0"
+version = "0.2.0"
 description = "File format readers/writers and lazy datasets for pd_xray."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
-dependencies = ["pd-xray-core~=0.1.0"]
+dependencies = ["pd-xray-core~=0.2.0"]
 
 [project.optional-dependencies]
 hdf5 = ["h5py>=3.10,<4", "hdf5plugin>=4.4"]

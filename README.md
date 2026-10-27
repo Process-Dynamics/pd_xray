@@ -7,7 +7,7 @@ X-ray radiography toolkit from the Process Dynamics group. You can use it in two
 - **Python packages**: the same reading, processing and storage functions, in your own scripts and notebooks.
 
 Runs on Linux, macOS and Windows (WSL), with Python 3.10–3.12. Current release:
-[v0.1.0](https://github.com/Process-Dynamics/pd_xray/releases/tag/v0.1.0).
+[v0.2.0](https://github.com/Process-Dynamics/pd_xray/releases/tag/v0.2.0).
 
 ## 1. Web app
 
@@ -58,12 +58,12 @@ dependencies from PyPI.
 The packages aren't on PyPI. Point pip at a release with `--find-links`:
 
 ```bash
-REL=https://github.com/Process-Dynamics/pd_xray/releases/expanded_assets/v0.1.0
+REL=https://github.com/Process-Dynamics/pd_xray/releases/expanded_assets/v0.2.0
 pip install --find-links $REL "pd-xray-io[hdf5,tiff]" pd-xray-processing
 ```
 
-In a `requirements.txt`, put `--find-links https://github.com/Process-Dynamics/pd_xray/releases/expanded_assets/v0.1.0`
-on the first line, then e.g. `pd-xray-io[hdf5]~=0.1.0`.
+In a `requirements.txt`, put `--find-links https://github.com/Process-Dynamics/pd_xray/releases/expanded_assets/v0.2.0`
+on the first line, then e.g. `pd-xray-io[hdf5]~=0.2.0`.
 
 ```python
 from pd_xray.io import convert, map_frames, open_dataset
