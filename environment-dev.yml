@@ -1,0 +1,34 @@
+name: pd-xray-dev
+channels:
+  - conda-forge
+  - nodefaults
+dependencies:
+  - python=3.12
+  - numpy=1.26.4
+  - h5py=3.16.0
+  - hdf5plugin=7.1.0
+  - tifffile=2025.5.10
+  - imagecodecs=2026.8.16      # via tifffile; conda-forge build runs on NumPy 1.26 (pip check warns: upstream says >=2.1)
+  - pillow=12.3.0
+  - scipy=1.15.2
+  - scikit-image=0.25.2
+  - pyyaml=6.0.3
+  - fastapi-core=0.142.2
+  - uvicorn=0.54.0
+  - websockets=16.1.1
+  - asyncssh=2.24.0
+  - boto3=1.43.114
+  - moto=5.2.4
+  - nbstripout=0.9.1
+  - httpx=0.28.1
+  - nodejs=24.21.0
+  - pip
+  - ruff=0.17.2
+  - mypy=2.4.0
+  - pytest=9.1.1
+  - pip:
+      - -e ./packages/pd-xray-core
+      - -e ./packages/pd-xray-storage[all]
+      - -e ./packages/pd-xray-io[all]
+      - -e ./packages/pd-xray-processing
+      - -e ./packages/pd-xray-server

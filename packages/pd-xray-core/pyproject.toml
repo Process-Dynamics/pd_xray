@@ -1,0 +1,15 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pd-xray-core"
+version = "0.1.0"
+description = "Shared types, errors and progress/cancellation protocol for pd_xray."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.26.4,<2"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pd_xray"]
