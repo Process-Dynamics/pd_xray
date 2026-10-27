@@ -1,6 +1,6 @@
 # pd_xray documentation
 
-Start with the [README](../README.md) for a quick start.
+Start with the [README](../README.md): launching the web app, and installing the packages from a release.
 
 | Page | For |
 |---|---|
@@ -10,8 +10,7 @@ Start with the [README](../README.md) for a quick start.
 | [`pd_xray.processing`](processing.md) | Operations, pipelines, pipeline files, processing whole datasets |
 | [`pd_xray.storage`](storage.md) | Local, NAS (SFTP) and S3 storage, copying, the `pd-xray-storage` command |
 | [`pd_xray.core`](core.md) | Axis names, progress reporting and cancelling, errors |
-| [Development](development.md) | Tests, checks, rebuilding the web UI |
-| [Manual testing](manual_testing.md) | Step-by-step checks on real data (for maintainers) |
+| [Development](development.md) | Tests, checks, rebuilding the web UI, releases |
 
 ## The packages
 

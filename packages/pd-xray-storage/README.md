@@ -3,10 +3,8 @@
 Storage backends for pd_xray: local folders (also NFS/SMB mounts), SFTP (e.g. Synology NAS) and S3 (AWS or
 S3-compatible). Paths are relative to the storage root; files open as seekable, range-reading binary files.
 
-```bash
-pip install "pd-xray-storage[sftp]"   # asyncssh
-pip install "pd-xray-storage[s3]"     # boto3
-```
+Install from a GitHub release with `pip install --find-links …`: see the [main
+README](../../README.md#2-python-packages). Extras: `[sftp]` (asyncssh), `[s3]` (boto3) or `[all]`.
 
 ```python
 from pd_xray.storage import LocalStorage, S3Storage, SFTPStorage, copy

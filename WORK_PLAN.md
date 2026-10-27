@@ -3,12 +3,12 @@
 One step at a time, in order. A step is done when it meets "Done" and the user has reviewed it.
 `[ ]` todo · `[~]` in progress · `[x]` done. Resolve a step's open decisions before starting it.
 
-**Current:** 1.9 built, awaiting review (release, colleague install, Jetson: manual guide §17). 2.4b (S3) waits for
-bucket access; real S3 check of 2.3 too (§14).
+**Current:** 1.9: v0.1.0 released (wheels on GitHub); README/docs rewritten for users. Left: colleague install,
+Jetson. 2.4b (S3) waits for bucket access; real S3 check of 2.3 too.
 Phase 2 (2.1–2.3) ran before 1.8; 2.4 runs before 1.9.
 Open items: Starlette TestClient warns `httpx` → `httpx2` (harmless); threshold's default value 0 keeps everything.
-Manual test guide: `docs/manual_testing.md` (update it per step). User docs: `README.md`, `docs/*.md` (update with
-features).
+User docs: `README.md` (web app + packages), `docs/*.md`, `packages/*/README.md`: update with features. The manual
+test guide was removed (v0.1.0); real-data checks before a release: `docs/development.md`.
 
 ## Phase 0: Foundations
 
@@ -151,7 +151,7 @@ Scope: local/NFS files. TIFF (multi-page), PNG, JPG, HDF5. Axes `(Y, X)`, `(T, Y
   packages attached to a GitHub release; users `pip install --find-links …/releases/expanded_assets/vX.Y.Z`.
   `imagecodecs=2026.8.16` pinned in both env files. Docs: installation (from a release), development (releases).
 - Measured: fresh conda env from a clean copy 34 s, smoke test OK; Python 3.10 venvs from the wheels (library-only,
-  full app) `pip check` clean and working. Left for the user: publish v0.1.0, a colleague's machine, the Jetson.
+  full app) `pip check` clean and working. v0.1.0 published by the user. Left: a colleague's machine, the Jetson.
 
 ## Phase 2: Remote storage and copying
 
