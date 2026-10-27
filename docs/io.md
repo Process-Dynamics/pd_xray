@@ -77,6 +77,29 @@ images.files[0], images[0].shape
 Each frame is read from its own file on demand. All files must have the same shape and dtype (a mismatch raises
 when that frame is read).
 
+## VTK volumes → HDF5
+
+Legacy `.vtk` files (binary `STRUCTURED_POINTS`, one scalar field, e.g. phase-field simulation output). NumPy only,
+no extra. Not opened by `open_dataset` and not shown in the web app.
+
+```python
+from pd_xray.io import convert
+from pd_xray.io.vtk import open_vtk, open_vtk_series
+
+with open_vtk("VTKS_EQX_FRAC1/AlCu5_3D_V1_1.vtk") as vol:   # (z, y, x), memory-mapped
+    convert(vol, "out/frac1_t0.h5")                          # one chunk per z-slice
+with open_vtk_series("VTKS_EQX_FRAC1") as series:           # *.vtk in natural order -> (time, z, y, x)
+    series.metadata["time_s"]                                # [0.0, 0.45, …] from titles "t = 0.45 s"
+    convert(series, "out/frac1.h5", compression="gzip")
+```
+
+- Values are exact, returned in native byte order (VTK stores big-endian float32).
+- Metadata: `scalar_name`, `vtk_title`(s), `spacing` and `origin` in **(z, y, x)** order (the header's x, y, z
+  reversed), `time_s`, `source_files` (series). Stored as HDF5 attributes by `convert`.
+- A series needs every file on the same grid. Without times in all titles the first axis is `frame`.
+- ASCII files, other dataset types, several fields and truncated files are refused with a clear error.
+- ~1 GB/s to uncompressed HDF5 (700³ float32 in 1.1 s; 7 × 700³ in 10 s).
+
 ## Iterating frame by frame
 
 `iter_frames` yields 2D frames one at a time, so memory stays at one frame however big the dataset:

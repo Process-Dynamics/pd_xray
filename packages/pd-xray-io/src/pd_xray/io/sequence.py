@@ -95,21 +95,29 @@ def open_sequence(
         >>> images = open_sequence("data/0042", "*_img.tif")
         >>> darks = open_sequence("data/0042", "*_dar.tif")
     """
-    if isinstance(source, (str, Path)):
-        directory = Path(source)
-        if storage is not None:
-            if not storage.stat(str(directory)).is_dir:
-                raise NotADirectoryError(f"Not a directory: {directory}")
-            found = [
-                Path(e.path) for e in storage.list(str(directory)) if not e.is_dir and fnmatch.fnmatch(e.name, pattern)
-            ]
-        elif not directory.is_dir():
-            raise NotADirectoryError(f"Not a directory: {directory}")
-        else:
-            found = [p for p in directory.glob(pattern) if p.is_file()]
-        files = sorted(found, key=natural_key)
-        if not files:
-            raise PdXrayError(f"No files match '{pattern}' in {directory}.")
-    else:
-        files = [Path(p) for p in source]
+    files = find_files(source, pattern, storage) if isinstance(source, (str, Path)) else [Path(p) for p in source]
     return FileSequence(files, axes, storage)
+
+
+def find_files(directory: str | Path, pattern: str, storage: FileStore | None = None) -> list[Path]:
+    """Files directly in `directory` (local, or in `storage`) matching the glob `pattern`, in natural order.
+
+    Raises:
+        NotADirectoryError: If `directory` isn't a folder.
+        PdXrayError: If no file matches.
+    """
+    directory = Path(directory)
+    if storage is not None:
+        if not storage.stat(str(directory)).is_dir:
+            raise NotADirectoryError(f"Not a directory: {directory}")
+        found = [
+            Path(e.path) for e in storage.list(str(directory)) if not e.is_dir and fnmatch.fnmatch(e.name, pattern)
+        ]
+    elif not directory.is_dir():
+        raise NotADirectoryError(f"Not a directory: {directory}")
+    else:
+        found = [p for p in directory.glob(pattern) if p.is_file()]
+    files = sorted(found, key=natural_key)
+    if not files:
+        raise PdXrayError(f"No files match '{pattern}' in {directory}.")
+    return files
