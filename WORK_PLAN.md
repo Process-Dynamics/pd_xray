@@ -244,6 +244,13 @@ View, process and run pipelines on files on a NAS or S3 without copying them fir
 - Sessions, job queue limits, cache limits. Server config file and log files. Verify on the Jetson.
 
 ## Phase 4: More formats and operations
+
+### [~] 4.0 VTK legacy → HDF5 (user request, library only)
+- io `pd_xray.io.vtk`: `open_vtk` (lazy `(z, y, x)`, memmap; `storage=` reads z-slices), `open_vtk_series` (folder
+  or files → `(time, z, y, x)`, same grid required). Binary STRUCTURED_POINTS, one scalar field; others refused.
+  HDF5 via `convert`. `sequence.find_files` shared with `open_sequence`.
+- Done: real files (`~/tomo_simulation/data/external_simulation`, 700³ and 3200×160×800 float32) → HDF5 identical to
+  a raw memmap, ~1 GB/s; 7-step series → one 9.6 GB 4D file in 10 s. Py3.10 tested.
 - EDF, VTI.
 - Histogram, line profile, ROI measurements, frame arithmetic.
 
@@ -331,6 +338,9 @@ Tomography and 3D views, Zarr/remote-friendly layout, segmentation/dendrite anal
 - 2026-10-26: 1.8 reviewed. 2.4 (lazy remote datasets) moved before 1.9, split into 2.4a NAS and 2.4b S3 (S3 later:
   access issue). io takes `storage=` (duck-typed open/list; no storage import). Remote datasets' references live on
   the same connection (relative to the dataset's folder when inside it).
+- 2026-10-27: VTK legacy reader in io (4.0, user request): `open_vtk`/`open_vtk_series` only, not in `open_dataset`
+  (web app doesn't list `.vtk`). Native-endian values. Series stacked to 4D (time, z, y, x). Only binary
+  STRUCTURED_POINTS with one scalar field. NumPy only, no extra.
 - 2026-10-26: 2.4a reviewed. D9: releases are GitHub Release wheels installed with `--find-links` (no PyPI for
   now). Packages require their siblings at the same minor version (`~=`). imagecodecs pinned to 2026.8.16: every
   release allowing NumPy 1.x needs c-blosc2 2.x, which conflicts with hdf5plugin 7.1.0; conda-forge's build runs on

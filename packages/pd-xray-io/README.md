@@ -1,6 +1,7 @@
 # pd-xray-io
 
-Lazy readers and writers for HDF5, TIFF, PNG and JPG, folders of single images, and format conversion.
+Lazy readers and writers for HDF5, TIFF, PNG and JPG, folders of single images, and format conversion. Legacy VTK
+volumes (`pd_xray.io.vtk`) can be converted to HDF5.
 
 Install from a GitHub release with `pip install --find-links …`: see the [main
 README](../../README.md#2-python-packages). Extras: `[hdf5]`, `[tiff]`, `[png]` or `[all]`.
