@@ -85,5 +85,6 @@ Guides: [`pd_xray.io`](docs/io.md), [`pd_xray.processing`](docs/processing.md), 
 ## More
 
 - [docs/](docs/README.md): all guides.
+- [ACCESS phase X-ray viewer](examples/access_phase_viewer/README.md): standalone single-dendrite 3D orientation and simulated radiography example.
 - [Development](docs/development.md): tests, rebuilding the web UI, making a release.
 - Problems or questions: open an issue on GitHub.

@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ACCESS Dendrite X-ray Viewer</title>
+  <style>
+    :root { font-family: system-ui, Segoe UI, sans-serif; color: #e8edf4; background: #111722; }
+    * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+    body { margin: 0; padding: 24px; }
+    h1 { margin: 0 0 5px; font-size: 24px; font-weight: 620; }
+    p { margin: 0; color: #a9b6c8; }
+    .layout { display: grid; grid-template-columns: minmax(320px, 1fr) minmax(320px, 1fr); gap: 18px; max-width: 1190px; margin: 22px auto 0; }
+    header { max-width: 1190px; margin: auto; }
+    .card { background: #1a2330; border: 1px solid #2d3a4d; border-radius: 12px; padding: 16px; min-width: 0; }
+    .card h2 { font-size: 16px; font-weight: 600; margin: 0 0 12px; }
+    canvas, #result { display: block; width: 100%; max-width: 512px; aspect-ratio: 1; margin: auto; border-radius: 7px; background: #0c111a; }
+    canvas { cursor: grab; touch-action: none; }
+    canvas:active { cursor: grabbing; }
+    #result { object-fit: contain; }
+    .empty { width: 100%; max-width: 512px; aspect-ratio: 1; margin: auto; border-radius: 7px; background: #111925; display: grid; place-items: center; color: #7e8da1; text-align: center; padding: 24px; }
+    .row { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; margin-top: 13px; }
+    button { border: 1px solid #465771; background: #263548; color: #f4f7fa; border-radius: 7px; padding: 9px 13px; font: inherit; cursor: pointer; }
+    button:hover:not(:disabled) { background: #344b66; }
+    button:disabled { opacity: .45; cursor: default; }
+    button.primary { background: #366aa8; border-color: #4a82c6; }
+    button.primary:hover:not(:disabled) { background: #4380c7; }
+    button.stop { border-color: #8a5b5b; color: #f0caca; }
+    label { color: #c4cfdd; font-size: 13px; }
+    input[type=number] { width: 76px; padding: 7px; color: #e8edf4; background: #101926; border: 1px solid #465771; border-radius: 6px; font: inherit; }
+    select { padding: 7px 10px; color: #e8edf4; background: #101926; border: 1px solid #465771; border-radius: 6px; font: inherit; }
+    input[type=radio] { accent-color: #70a8ed; }
+    .angles, .status { color: #aebdd0; font-size: 13px; min-height: 22px; margin-top: 11px; }
+    .hint { font-size: 12px; margin-top: 8px; line-height: 1.5; }
+    .controls { justify-content: space-between; }
+    @media (max-width: 760px) { body { padding: 14px; } .layout { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>ACCESS dendrite X-ray viewer</h1>
+    <p>One grain · choose a native phase snapshot · drag the preview, then render its current view</p>
+  </header>
+  <main class="layout">
+    <section class="card">
+      <h2>1 · Rotate the downsampled geometry</h2>
+      <div class="row"><label>Time step <select id="timeStep"><option value="6">Step 6 · 2.50 s</option></select></label></div>
+      <canvas id="preview" width="512" height="512" aria-label="Rotatable 3D dendrite preview"></canvas>
+      <div class="row">
+        <button id="front">Front 0°</button>
+        <button id="side">Side 45°</button>
+        <button id="reset">Reset</button>
+      </div>
+      <div class="angles" id="angles">Yaw 0.0° · Pitch 0.0° · Roll 0.0°</div>
+      <p class="hint" id="previewStatus">Loading geometry…</p>
+      <p class="hint">Drag to rotate yaw and pitch. Shift + drag to roll. The preview uses sampled surface points; the X-ray uses the 511³ phase model.</p>
+      <div class="row controls">
+        <label>Grain μ (/µm) <input id="objectMu" type="number" min="0.001" max="0.2" step="0.001" value="0.040"></label>
+        <label>Background μ (/µm) <input id="backgroundMu" type="number" min="0" max="0.2" step="0.001" value="0.023"></label>
+      </div>
+    </section>
+    <section class="card">
+      <h2>2 · Render and save the X-ray</h2>
+      <div id="empty" class="empty">Rotate the dendrite and click Render X-ray.</div>
+      <img id="result" alt="Rendered X-ray projection" hidden>
+      <div class="row">
+        <button class="primary" id="render">Render X-ray</button>
+        <button id="save" disabled>Save PNG…</button>
+        <label><input type="radio" name="mode" value="enhanced" checked> Enhanced</label>
+        <label><input type="radio" name="mode" value="raw"> Raw (windowed)</label>
+      </div>
+      <div class="status" id="status">Ready.</div>
+      <p class="hint">Raw shows 1 − I/I₀ with background attenuation through a fixed 0.88–1.00 display window. Enhanced removes the background brightness baseline and brightens thin arms. Save downloads the view currently shown.</p>
+      <div class="row"><button class="stop" id="stop">Stop server</button></div>
+    </section>
+  </main>
+  <script>
+    const canvas = document.getElementById('preview');
+    const ctx = canvas.getContext('2d');
+    const result = document.getElementById('result');
+    const empty = document.getElementById('empty');
+    const renderBtn = document.getElementById('render');
+    const saveBtn = document.getElementById('save');
+    const stopBtn = document.getElementById('stop');
+    const status = document.getElementById('status');
+    const angleText = document.getElementById('angles');
+    const objectMu = document.getElementById('objectMu');
+    const backgroundMu = document.getElementById('backgroundMu');
+    const timeStep = document.getElementById('timeStep');
+    const previewStatus = document.getElementById('previewStatus');
+    let points = [], yaw = 0, pitch = 0, roll = 0;
+    let dragging = false, lastX = 0, lastY = 0, imageData = null, info = null;
+    let modelRequest = 0, timeOptionsLoaded = false;
+    const deg = Math.PI / 180;
+
+    function multiply(a, b) {
+      const out = Array(9).fill(0);
+      for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++)
+        for (let k = 0; k < 3; k++) out[3*i+j] += a[3*i+k] * b[3*k+j];
+      return out;
+    }
+    function matrix() {
+      const [cy, sy] = [Math.cos(yaw*deg), Math.sin(yaw*deg)];
+      const [cp, sp] = [Math.cos(pitch*deg), Math.sin(pitch*deg)];
+      const [cr, sr] = [Math.cos(roll*deg), Math.sin(roll*deg)];
+      const rx = [1,0,0, 0,cy,-sy, 0,sy,cy];
+      const rz = [cp,-sp,0, sp,cp,0, 0,0,1];
+      const ry = [cr,0,sr, 0,1,0, -sr,0,cr];
+      return multiply(ry, multiply(rz, rx));
+    }
+    function transform(p, r) {
+      return [r[0]*p[0]+r[1]*p[1]+r[2]*p[2],
+              r[3]*p[0]+r[4]*p[1]+r[5]*p[2],
+              r[6]*p[0]+r[7]*p[1]+r[8]*p[2]];
+    }
+    function draw() {
+      ctx.fillStyle = '#0c111a'; ctx.fillRect(0, 0, 512, 512);
+      const r = matrix(), scale = 192;
+      const projected = points.map(p => transform(p, r));
+      projected.sort((a, b) => b[1] - a[1]);
+      for (const p of projected) {
+        const light = Math.max(125, Math.min(230, 182 - p[1]*35));
+        ctx.fillStyle = `rgb(${light-20},${light-2},${light+12})`;
+        ctx.fillRect(256 + p[2]*scale, 256 + p[0]*scale, 2.2, 2.2);
+      }
+      const center = [256, 256];
+      const axes = [
+        [[.28,0,0], '#e47474', 'X'],
+        [[0,.28,0], '#83d68b', 'Y'],
+        [[0,0,.28], '#80b9ef', 'Z']
+      ];
+      ctx.lineWidth = 2; ctx.font = '13px system-ui';
+      for (const [axis, color, label] of axes) {
+        const p = transform(axis, r), x = center[0]+p[2]*scale, y = center[1]+p[0]*scale;
+        ctx.strokeStyle = color; ctx.fillStyle = color;
+        ctx.beginPath(); ctx.moveTo(...center); ctx.lineTo(x, y); ctx.stroke();
+        ctx.fillText(label, x+4, y-4);
+      }
+      angleText.textContent = `Yaw ${yaw.toFixed(1)}° · Pitch ${pitch.toFixed(1)}° · Roll ${roll.toFixed(1)}°`;
+    }
+    function changed() {
+      draw();
+      if (imageData) { saveBtn.disabled = true; status.textContent = 'View changed. Click Render X-ray to update the image.'; }
+    }
+    canvas.addEventListener('pointerdown', e => { dragging = true; lastX=e.clientX; lastY=e.clientY; canvas.setPointerCapture(e.pointerId); });
+    canvas.addEventListener('pointerup', () => dragging = false);
+    canvas.addEventListener('pointercancel', () => dragging = false);
+    canvas.addEventListener('lostpointercapture', () => dragging = false);
+    window.addEventListener('pointerup', () => dragging = false);
+    window.addEventListener('blur', () => dragging = false);
+    canvas.addEventListener('pointermove', e => {
+      if (!dragging) return;
+      if (!(e.buttons & 1)) { dragging = false; return; }
+      const dx=e.clientX-lastX, dy=e.clientY-lastY; lastX=e.clientX; lastY=e.clientY;
+      if (e.shiftKey) roll += dx*.42; else { yaw += dx*.42; pitch += dy*.42; }
+      changed();
+    });
+    document.getElementById('front').onclick = () => { yaw=0; pitch=0; roll=0; changed(); };
+    document.getElementById('side').onclick = () => { yaw=45; pitch=0; roll=0; changed(); };
+    document.getElementById('reset').onclick = () => { yaw=0; pitch=0; roll=0; changed(); };
+    objectMu.addEventListener('input', changed);
+    backgroundMu.addEventListener('input', changed);
+    async function loadModel(step) {
+      const requestId = ++modelRequest;
+      previewStatus.textContent = 'Loading geometry…';
+      try {
+        const response = await fetch(`/model?step=${step}`);
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Model load failed');
+        if (requestId !== modelRequest) return;
+        if (!timeOptionsLoaded) {
+          timeStep.innerHTML = data.timesteps.map((time, i) =>
+            `<option value="${i}">Step ${i} · ${time.toFixed(2)} s${i === 0 ? ' (empty)' : ''}</option>`
+          ).join('');
+          timeOptionsLoaded = true;
+        }
+        timeStep.value = String(step);
+        points = data.points; draw();
+        previewStatus.textContent = points.length
+          ? `${points.length.toLocaleString()} surface points · source time ${data.source_time_s.toFixed(2)} s`
+          : 'Initial phase frame: no visible crystal.';
+      } catch (error) { previewStatus.textContent = `Model load failed: ${error.message}`; }
+    }
+    timeStep.addEventListener('change', () => {
+      points = []; draw(); imageData = null; info = null;
+      result.hidden = true; empty.hidden = false;
+      empty.textContent = 'Click Render X-ray for the selected time step.';
+      saveBtn.disabled = true;
+      status.textContent = 'Time step changed. Choose an angle and render.';
+      loadModel(Number(timeStep.value));
+    });
+    function showImage() {
+      if (!imageData) return;
+      const mode = document.querySelector('input[name=mode]:checked').value;
+      result.src = `data:image/png;base64,${imageData[mode + '_png']}`;
+      result.hidden = false; empty.hidden = true;
+    }
+    document.querySelectorAll('input[name=mode]').forEach(radio => radio.addEventListener('change', showImage));
+    renderBtn.onclick = async () => {
+      renderBtn.disabled = true; saveBtn.disabled = true; timeStep.disabled = true; stopBtn.disabled = true;
+      canvas.style.pointerEvents = 'none'; objectMu.disabled = true; backgroundMu.disabled = true;
+      status.textContent = 'Rendering the 511³ phase volume…';
+      try {
+        const response = await fetch('/render', {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({step:Number(timeStep.value), yaw, pitch, roll, object_mu:Number(objectMu.value), background_mu:Number(backgroundMu.value)})
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Render failed');
+        imageData = data; info = data.info; showImage();
+        saveBtn.disabled = false;
+        status.textContent = `Rendered step ${info.source_frame} (${info.source_time_s.toFixed(2)} s) · background τ ${info.background_tau.toFixed(2)} · beam [${info.beam_world_xyz.join(', ')}]`;
+      } catch (error) { status.textContent = `Render failed: ${error.message}`; }
+      finally {
+        renderBtn.disabled = false; timeStep.disabled = false; stopBtn.disabled = false;
+        canvas.style.pointerEvents = ''; objectMu.disabled = false; backgroundMu.disabled = false;
+      }
+    };
+    saveBtn.onclick = async () => {
+      if (!imageData) return;
+      const mode = document.querySelector('input[name=mode]:checked').value;
+      const name = `access_dendrite_step${info.source_frame}_t${info.source_time_s.toFixed(2).replace('.', 'p')}_y${Math.round(info.yaw_deg)}_p${Math.round(info.pitch_deg)}_r${Math.round(info.roll_deg)}_${mode}.png`;
+      const blob = await (await fetch(`data:image/png;base64,${imageData[mode + '_png']}`)).blob();
+      if (window.showSaveFilePicker) {
+        try {
+          const handle = await window.showSaveFilePicker({suggestedName:name, types:[{description:'PNG image', accept:{'image/png':['.png']}}]});
+          const file = await handle.createWritable(); await file.write(blob); await file.close();
+        } catch (error) { if (error.name !== 'AbortError') status.textContent = `Save failed: ${error.message}`; }
+      } else {
+        const link = document.createElement('a'); link.href=URL.createObjectURL(blob); link.download=name;
+        link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+      }
+    };
+    stopBtn.onclick = async () => {
+      stopBtn.disabled = true;
+      try {
+        const response = await fetch('/shutdown', {
+          method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}'
+        });
+        if (!response.ok) throw new Error('The server did not stop');
+        renderBtn.disabled = true; timeStep.disabled = true;
+        status.textContent = 'Server stopped. Double-click start_access_phase_viewer.cmd to open it again.';
+      } catch (error) {
+        stopBtn.disabled = false;
+        status.textContent = `Stop failed: ${error.message}`;
+      }
+    };
+    loadModel(6);
+    draw();
+  </script>
+</body>
+</html>
